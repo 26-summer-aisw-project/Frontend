@@ -1,2 +1,2 @@
 # Frontend
-Frontend (app) project of {our-project-name}
+Frontend project of LOSTORY
