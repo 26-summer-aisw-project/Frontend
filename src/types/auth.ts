@@ -9,15 +9,19 @@ export interface AuthRequest {
 }
 
 export type LoginRequest = AuthRequest;
-export type SignupRequest = AuthRequest;
+export interface SignupRequest extends AuthRequest {
+  displayName: string;
+}
 
 /** bigint ID는 JSON 숫자가 아닌 10진 문자열로 전달된다. */
 export interface UserResponse {
   id: string;
   email: string;
-  displayName: string | null;
+  displayName: string;
   roles: UserRole[];
   status: UserStatus;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface LoginResponse {
@@ -50,7 +54,8 @@ export type LoginErrorCode = Extract<
 
 export const PASSWORD_MIN_BYTES = 8;
 export const PASSWORD_MAX_BYTES = 72;
-export const EMAIL_MAX_LENGTH = 320;
+export const EMAIL_MAX_LENGTH = 254;
+export const DISPLAY_NAME_MAX_LENGTH = 100;
 
 /** Java/Spring의 UTF-8 바이트 길이 검증과 같은 기준으로 계산한다. */
 export function utf8ByteLength(value: string): number {

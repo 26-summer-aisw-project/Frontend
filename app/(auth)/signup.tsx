@@ -22,6 +22,8 @@ import {
 import { ApiError, apiRequest } from '@/src/lib/api';
 import { appFontFamily, useAppColors } from '@/src/theme/colors';
 import {
+  DISPLAY_NAME_MAX_LENGTH,
+  EMAIL_MAX_LENGTH,
   PASSWORD_MAX_BYTES,
   PASSWORD_MIN_BYTES,
   utf8ByteLength,
@@ -39,8 +41,13 @@ const LOCK_ICON: SymbolViewProps['name'] = {
   android: 'lock',
   web: 'lock',
 };
+const NAME_ICON: SymbolViewProps['name'] = {
+  ios: 'person',
+  android: 'person',
+  web: 'person',
+};
 
-type SignupField = 'email' | 'password' | 'passwordConfirm';
+type SignupField = 'displayName' | 'email' | 'password' | 'passwordConfirm';
 type SignupFieldErrors = Partial<Record<SignupField, string>>;
 
 /**
@@ -64,8 +71,10 @@ function passwordLengthError(password: string): string | undefined {
 
 export default function SignupScreen() {
   const colors = useAppColors();
+  const emailRef = useRef<TextInput>(null);
   const passwordRef = useRef<TextInput>(null);
   const passwordConfirmRef = useRef<TextInput>(null);
+  const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
@@ -84,8 +93,18 @@ export default function SignupScreen() {
 
   async function handleSignup() {
     const nextErrors: SignupFieldErrors = {};
-    if (email.trim().length === 0) {
+    const trimmedDisplayName = displayName.trim();
+    const trimmedEmail = email.trim();
+
+    if (trimmedDisplayName.length === 0) {
+      nextErrors.displayName = '표시 이름을 입력해 주세요.';
+    } else if (trimmedDisplayName.length > DISPLAY_NAME_MAX_LENGTH) {
+      nextErrors.displayName = `표시 이름은 ${DISPLAY_NAME_MAX_LENGTH}자 이하로 입력해 주세요.`;
+    }
+    if (trimmedEmail.length === 0) {
       nextErrors.email = '이메일을 입력해 주세요.';
+    } else if (trimmedEmail.length > EMAIL_MAX_LENGTH) {
+      nextErrors.email = `이메일은 ${EMAIL_MAX_LENGTH}자 이하로 입력해 주세요.`;
     }
     const passwordLengthMessage = passwordLengthError(password);
     if (passwordLengthMessage) {
@@ -107,7 +126,11 @@ export default function SignupScreen() {
     setFormError(null);
 
     try {
-      const request: SignupRequest = { email: email.trim(), password };
+      const request: SignupRequest = {
+        displayName: trimmedDisplayName,
+        email: trimmedEmail,
+        password,
+      };
       await apiRequest<SignupResponse>('/auth/signup', {
         method: 'POST',
         json: request,
@@ -123,6 +146,7 @@ export default function SignupScreen() {
           const validationErrors: SignupFieldErrors = {};
           for (const detail of error.details) {
             if (
+              detail.field === 'displayName' ||
               detail.field === 'email' ||
               detail.field === 'password' ||
               detail.field === 'passwordConfirm'
@@ -167,6 +191,24 @@ export default function SignupScreen() {
 
         <View style={styles.content}>
           <View style={[styles.card, createCardStyle(colors)]}>
+            <FormField
+              autoCapitalize="words"
+              autoComplete="name"
+              error={fieldErrors.displayName}
+              helper="마이페이지에 표시되는 이름이에요"
+              icon={NAME_ICON}
+              label="표시 이름"
+              onChangeText={(value) => {
+                setDisplayName(value);
+                clearFieldError('displayName');
+              }}
+              onSubmitEditing={() => emailRef.current?.focus()}
+              placeholder="홍길동"
+              required
+              returnKeyType="next"
+              textContentType="name"
+              value={displayName}
+            />
             <FormField
               autoCapitalize="none"
               autoComplete="email"

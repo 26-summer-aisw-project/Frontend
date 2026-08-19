@@ -1,10 +1,16 @@
 import type { ErrorCode, ErrorDetail, ErrorResponse } from '@/src/types/error';
-import type { LoginRequest, SignupRequest } from '@/src/types/auth';
+import type { LoginRequest, SignupRequest, UserResponse } from '@/src/types/auth';
 
 type MockApiRequestOptions = Pick<RequestInit, 'body' | 'headers' | 'method'>;
 
 const MOCK_TOKEN = 'mock-token-xxx';
 const MOCK_REQUEST_ID = 'mock-request-id';
+const MOCK_USER_ID = '1';
+const MOCK_ME_EMAIL = 'test@test.com';
+const MOCK_ME_DISPLAY_NAME = '테스트 사용자';
+const MOCK_CREATED_AT = '2026-08-18T09:30:00Z';
+
+const mockUsers = new Map<string, UserResponse>();
 
 function normalizePath(path: string): string {
   return path.startsWith('/') ? path : `/${path}`;
@@ -12,6 +18,10 @@ function normalizePath(path: string): string {
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
+}
+
+function normalizeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function parseJsonBody<T>(body: BodyInit | null | undefined): T | null {
@@ -58,6 +68,34 @@ function hasValidMockToken(headers: HeadersInit | undefined): boolean {
   return authorization === `Bearer ${MOCK_TOKEN}`;
 }
 
+function createMockUser(email: string, displayName: string): UserResponse {
+  return {
+    id: MOCK_USER_ID,
+    email,
+    displayName,
+    roles: ['USER'],
+    status: 'ACTIVE',
+    createdAt: MOCK_CREATED_AT,
+    updatedAt: MOCK_CREATED_AT,
+  };
+}
+
+function getMockUser(email: string): UserResponse {
+  const normalizedEmail = normalizeEmail(email);
+  const existingUser = mockUsers.get(normalizedEmail);
+
+  if (existingUser) {
+    return existingUser;
+  }
+
+  const fallbackUser = createMockUser(
+    normalizedEmail,
+    normalizedEmail === MOCK_ME_EMAIL ? MOCK_ME_DISPLAY_NAME : '새 사용자',
+  );
+  mockUsers.set(normalizedEmail, fallbackUser);
+  return fallbackUser;
+}
+
 export async function mockApiRequest(
   path: string,
   options: MockApiRequestOptions = {},
@@ -68,6 +106,7 @@ export async function mockApiRequest(
   if (method === 'POST' && normalizedPath === '/auth/signup') {
     const request = parseJsonBody<SignupRequest>(options.body);
     const email = normalizeEmail(request?.email ?? '');
+    const displayName = normalizeString(request?.displayName) || MOCK_ME_DISPLAY_NAME;
 
     if (email === 'duplicate@test.com') {
       return errorResponse(
@@ -77,13 +116,9 @@ export async function mockApiRequest(
       );
     }
 
-    return jsonResponse(201, {
-      id: '1',
-      email,
-      displayName: null,
-      roles: ['USER'],
-      status: 'ACTIVE',
-    });
+    const user = createMockUser(email, displayName);
+    mockUsers.set(email, user);
+    return jsonResponse(201, user);
   }
 
   if (method === 'POST' && normalizedPath === '/auth/login') {
@@ -102,13 +137,7 @@ export async function mockApiRequest(
       accessToken: MOCK_TOKEN,
       tokenType: 'Bearer',
       expiresAt: '2099-12-31T23:59:59Z',
-      user: {
-        id: '1',
-        email,
-        displayName: null,
-        roles: ['USER'],
-        status: 'ACTIVE',
-      },
+      user: getMockUser(email),
     });
   }
 
@@ -122,11 +151,7 @@ export async function mockApiRequest(
     }
 
     return jsonResponse(200, {
-      id: '1',
-      email: 'test@test.com',
-      displayName: null,
-      roles: ['USER'],
-      status: 'ACTIVE',
+      ...getMockUser(MOCK_ME_EMAIL),
     });
   }
 
