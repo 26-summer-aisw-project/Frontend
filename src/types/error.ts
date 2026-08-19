@@ -1,55 +1,92 @@
 /**
- * 백엔드 공통 에러 응답 타입.
+ * 백엔드가 응답하는 안정적인 에러 코드. HTTP 상태보다 이 값을 우선한다.
  *
- * 주의: `/v3/api-docs`에는 에러 응답이 **전혀 문서화되어 있지 않다**(성공 응답만 존재).
- * 아래 타입은 Backend `common/exception/ErrorCode.java`, `common/response/ErrorResponse.java`,
- * `common/exception/GlobalExceptionHandler.java` 를 직접 읽어 작성했다.
- * OpenAPI 스펙만으로 코드를 생성하면 에러 처리가 통째로 빠지므로 이 파일을 함께 써야 한다.
+ * `.claude/api-spec-v1.md` §2.3 표 전체를 담는다. 주석의 HTTP 상태는 명세가
+ * 규정한 값이며, 분기는 상태가 아니라 코드로 한다.
  */
-
-/** 모든 엔드포인트가 공유하는 에러 코드. */
 export type ErrorCode =
-  | 'COMMON-001' // 잘못된 요청 (400)
-  | 'COMMON-002' // 인증 필요 (401)
-  | 'COMMON-003' // 권한 없음 (403)
-  | 'COMMON-004' // 리소스 없음 (404)
-  | 'COMMON-005' // 서버 오류 (500)
-  | 'AUTH-001' // 이메일 중복 (409)
-  | 'AUTH-002' // 자격 증명 오류 (401)
-  | 'AUTH-003'; // 토큰 무효 (401)
+  // 400
+  | 'INVALID_JSON'
+  | 'INVALID_QUERY'
+  | 'INVALID_SORT'
+  // 401
+  | 'UNAUTHENTICATED'
+  | 'INVALID_CREDENTIALS'
+  // 403
+  | 'FORBIDDEN'
+  | 'USER_BLOCKED'
+  // 404
+  | 'NOT_FOUND'
+  // 409
+  | 'EMAIL_ALREADY_EXISTS'
+  | 'UNIQUE_CONFLICT'
+  | 'IDEMPOTENCY_CONFLICT'
+  // 422
+  | 'VALIDATION_ERROR'
+  | 'INVALID_STATE_TRANSITION'
+  | 'LAST_IMAGE_REQUIRED'
+  | 'THUMBNAIL_NOT_READY'
+  // 429
+  | 'RATE_LIMITED';
 
-/** 필드 단위 검증 실패 상세. Bean Validation 위반 시에만 채워진다. */
-export interface FieldErrorDetail {
+/** 입력 필드 단위의 검증 실패 정보. */
+export interface ErrorDetail {
   field: string;
-  message: string;
+  reason: string;
 }
 
 /**
- * 전 엔드포인트 공통 에러 바디.
+ * `details`와 `requestId`는 optional이다.
  *
- * `fieldErrors`는 항상 배열이며(서버가 `List.of()`로 보장), 검증 실패가 아니면 빈 배열이다.
+ * 명세 §2.3은 네 필드를 갖춘 형태 하나만 제시하지만, 필드 에러가 없는 응답이나
+ * 시큐리티 필터 단계에서 나가는 401처럼 봉투가 달라질 여지가 있는 경로가 있다.
+ * 이 둘을 필수로 두면 그런 응답에서 `code`를 통째로 잃고, 결과적으로
+ * `UNAUTHENTICATED` 분기에 도달하지 못해 토큰 삭제와 재로그인이 걸리지 않는다.
  */
-export interface ErrorResponse {
+export interface ErrorBody {
   code: ErrorCode;
   message: string;
-  fieldErrors: FieldErrorDetail[];
-  /** ISO-8601 instant. 예: "2026-08-13T04:21:00.123Z" */
-  timestamp: string;
+  details?: ErrorDetail[];
+  requestId?: string;
+}
+
+/** 모든 API 에러는 `error` 객체로 한 번 감싸서 내려온다. */
+export interface ErrorResponse {
+  error: ErrorBody;
 }
 
 /**
- * HTTP 상태가 아니라 `code`로 분기하는 편이 안정적이다.
- * 401 하나에 COMMON-002 / AUTH-002 / AUTH-003 세 가지가 몰려 있어
- * 상태 코드만으로는 "로그인 안 함", "비밀번호 틀림", "토큰 만료"를 구분할 수 없다.
+ * `code`와 `message`만으로 판정한다.
+ *
+ * `details`·`requestId`가 없거나 형태가 달라도 에러 응답으로 인정한다. 여기서
+ * 엄격하게 굴면 인식 실패가 곧 인증 흐름 중단으로 이어지기 때문이다. 대신
+ * 형태가 어긋난 `details`는 `toErrorDetails`가 걸러낸다.
  */
 export function isErrorResponse(value: unknown): value is ErrorResponse {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || value === null || !('error' in value)) {
     return false;
   }
-  const candidate = value as Partial<ErrorResponse>;
-  return (
-    typeof candidate.code === 'string' &&
-    typeof candidate.message === 'string' &&
-    Array.isArray(candidate.fieldErrors)
+
+  const error = (value as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+
+  const candidate = error as Partial<ErrorBody>;
+  return typeof candidate.code === 'string' && typeof candidate.message === 'string';
+}
+
+/** `details`가 없거나 형태가 어긋나면 빈 배열로 정규화한다. */
+export function toErrorDetails(value: unknown): ErrorDetail[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (detail): detail is ErrorDetail =>
+      typeof detail === 'object' &&
+      detail !== null &&
+      typeof (detail as Partial<ErrorDetail>).field === 'string' &&
+      typeof (detail as Partial<ErrorDetail>).reason === 'string',
   );
 }
