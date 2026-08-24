@@ -1,6 +1,13 @@
 import type { ErrorCode, ErrorDetail, ErrorResponse } from '@/src/types/error';
 import type { LoginRequest, SignupRequest, UserResponse } from '@/src/types/auth';
 import {
+  LOST_REPORT_RADIUS_METERS,
+  MAX_WAYPOINT_COUNT,
+  MIN_WAYPOINT_COUNT,
+  type CreateLostReportRequest,
+  type LostReportResponse,
+} from '@/src/types/lost-report';
+import {
   DEFAULT_RETENTION_DAYS,
   ALLOWED_IMAGE_CONTENT_TYPES,
   MAX_IMAGE_BYTES,
@@ -28,6 +35,7 @@ const MOCK_USER_ID = '1';
 const MOCK_ME_EMAIL = 'test@test.com';
 const MOCK_ME_DISPLAY_NAME = '테스트 사용자';
 const MOCK_CREATED_AT = '2026-08-18T09:30:00Z';
+const LOST_REPORT_RETENTION_DAYS = 7;
 
 const mockUsers = new Map<string, UserResponse>();
 
@@ -36,6 +44,7 @@ const mockFoundDrafts = new Map<
   string,
   FoundItemDraftResponse & { pollCount: number }
 >();
+const mockLostReports = new Map<string, LostReportResponse>();
 const mockFeatures = new Map<string, ItemFeatureResponse[]>();
 const mockUploadRequests = new Map<
   string,
@@ -44,6 +53,7 @@ const mockUploadRequests = new Map<
 let nextFoundItemId = 300;
 let nextImageId = 500;
 let nextFeatureId = 700;
+let nextLostReportId = 900;
 
 const MOCK_LOST_CENTERS: LostCenter[] = [
   {
@@ -279,9 +289,87 @@ export async function mockApiRequest(
 
   const isFoundItemPath = normalizedPath.startsWith('/found-items');
   const isCenterPath = normalizedPath.startsWith('/lost-centers');
+  const isLostReportPath = normalizedPath.startsWith('/lost-reports');
 
-  if ((isFoundItemPath || isCenterPath) && !hasValidMockToken(options.headers)) {
+  if (
+    (isFoundItemPath || isCenterPath || isLostReportPath) &&
+    !hasValidMockToken(options.headers)
+  ) {
     return errorResponse(401, 'UNAUTHENTICATED', '로그인이 필요합니다.');
+  }
+
+  if (method === 'POST' && normalizedPath === '/lost-reports') {
+    const request = parseJsonBody<CreateLostReportRequest>(options.body);
+    const details: ErrorDetail[] = [];
+    const waypoints = Array.isArray(request?.waypoints) ? request.waypoints : [];
+
+    if (!request || normalizeString(request.category).length === 0) {
+      details.push({ field: 'category', reason: 'Required.' });
+    }
+    if (!request || normalizeString(request.description).length === 0) {
+      details.push({ field: 'description', reason: 'Required.' });
+    }
+    if (!request || Number.isNaN(Date.parse(request.lostAtFrom))) {
+      details.push({ field: 'lostAtFrom', reason: 'Must be RFC 3339.' });
+    }
+    if (!request || Number.isNaN(Date.parse(request.lostAtTo))) {
+      details.push({ field: 'lostAtTo', reason: 'Must be RFC 3339.' });
+    }
+    if (
+      request &&
+      !Number.isNaN(Date.parse(request.lostAtFrom)) &&
+      !Number.isNaN(Date.parse(request.lostAtTo)) &&
+      Date.parse(request.lostAtFrom) > Date.parse(request.lostAtTo)
+    ) {
+      details.push({ field: 'lostAtFrom', reason: 'Must not be later than lostAtTo.' });
+    }
+    if (!request || request.searchRadiusMeters !== LOST_REPORT_RADIUS_METERS) {
+      details.push({
+        field: 'searchRadiusMeters',
+        reason: `Must be ${LOST_REPORT_RADIUS_METERS}.`,
+      });
+    }
+    if (
+      !request ||
+      waypoints.length < MIN_WAYPOINT_COUNT ||
+      waypoints.length > MAX_WAYPOINT_COUNT
+    ) {
+      details.push({
+        field: 'waypoints',
+        reason: `Must contain ${MIN_WAYPOINT_COUNT} to ${MAX_WAYPOINT_COUNT} waypoints.`,
+      });
+    } else {
+      waypoints.forEach((waypoint, index) => {
+        if (waypoint.ordinal !== index + 1 || !isValidGeoPoint(waypoint.point)) {
+          details.push({ field: `waypoints[${index}]`, reason: 'Invalid waypoint.' });
+        }
+        if ('placeName' in waypoint) {
+          details.push({ field: `waypoints[${index}].placeName`, reason: 'Not writable.' });
+        }
+      });
+    }
+
+    if (!request || details.length > 0) {
+      return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', details);
+    }
+
+    nextLostReportId += 1;
+    const timestamp = nowIso();
+    const report: LostReportResponse = {
+      ...request,
+      id: String(nextLostReportId),
+      reporterId: MOCK_USER_ID,
+      status: 'OPEN',
+      expiredAt: isoAfterDays(new Date(timestamp), LOST_REPORT_RETENTION_DAYS),
+      lastMatchedAt: timestamp,
+      candidatesStale: false,
+      resolvedCandidateId: null,
+      resolvedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    mockLostReports.set(report.id, report);
+    return jsonResponse(201, report);
   }
 
   if (method === 'GET' && normalizedPath === '/lost-centers') {
