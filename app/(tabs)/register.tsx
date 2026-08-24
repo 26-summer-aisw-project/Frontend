@@ -16,12 +16,6 @@ import {
   View,
 } from 'react-native';
 
-import {
-  DateTimeSheet,
-  ErrorBanner,
-  ICONS,
-  StepHero,
-} from '@/components/register-ui';
 import { RegisterCompletionView } from '@/components/register-completion-view';
 import {
   DESCRIPTION_MAX_LENGTH,
@@ -33,28 +27,33 @@ import {
   RegisterStorageStep,
 } from '@/components/register-form-steps';
 import { RegisterHandoverView } from '@/components/register-handover-view';
+import {
+  DateTimeSheet,
+  ErrorBanner,
+  ICONS,
+  StepHero,
+} from '@/components/register-ui';
 import { ApiError, apiRequest } from '@/src/lib/api';
-import { uploadFoundItemImage } from '@/src/lib/found-item-upload';
+import {
+  completeFoundItemDraft,
+  confirmFoundItemHandover,
+  createFoundItemDraft,
+  getFoundItem,
+} from '@/src/lib/found-item-draft';
 import { readExifHints, type ExifMap } from '@/src/lib/photo-exif';
 import { appFontFamily, useAppColors } from '@/src/theme/colors';
 import {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_COUNT,
-  normalizeStorageFields,
-  validateStorageFields,
   type AllowedImageContentType,
-  type CreateFoundItemRequest,
-  type CreateItemFeatureRequest,
+  type CompleteFoundItemDraftRequest,
+  type FoundItemDraftResponse,
   type FoundItemResponse,
   type GeoPoint,
   type LostCenter,
-  type ItemFeatureResponse,
   type PagedResponse,
   type StorageMethod,
-  type UpdateFoundItemRequest,
 } from '@/src/types/found-item';
-
-const PENDING_CENTER_STORAGE_DESC = '습득자가 분실물 센터 인계 전까지 임시 보관 중';
 
 const CATEGORIES: { value: string; label: string }[] = [
   { value: 'WALLET', label: '지갑 / 카드' },
@@ -72,6 +71,7 @@ const FIELD_STEPS: Record<string, number> = {
   expectedImageCount: 1,
   foundAt: 2,
   foundLocationText: 2,
+  foundLocation: 2,
   location: 2,
   name: 3,
   category: 3,
@@ -89,6 +89,7 @@ const FIELD_ERROR_MESSAGES: Record<string, string> = {
   expectedImageCount: `사진은 1~${MAX_IMAGE_COUNT}장까지 올릴 수 있어요.`,
   foundAt: '습득 일시를 다시 확인해 주세요.',
   foundLocationText: '습득 장소를 다시 확인해 주세요.',
+  foundLocation: '습득 장소를 다시 확인해 주세요.',
   location: '습득한 자리에서 "현위치"를 눌러 좌표를 확인해 주세요.',
   storageMethod: '보관 상태를 선택해 주세요.',
   storageDesc: '어디에 옮겼는지 적어 주세요.',
@@ -105,13 +106,18 @@ type PickedImage = {
   contentType: AllowedImageContentType;
   sizeBytes: number;
   sortOrder: number;
+  file?: File;
 };
 
 type FieldErrors = Partial<Record<keyof typeof FIELD_STEPS, string>>;
 
-// API 시간은 밀리초 없는 RFC 3339 UTC 문자열을 사용한다.
 function toUtcIso(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function isDraftExpired(draft: FoundItemDraftResponse): boolean {
+  const expiresAt = Date.parse(draft.draftExpiresAt);
+  return Number.isFinite(expiresAt) && expiresAt <= Date.now();
 }
 
 function formatPlace(place: Location.LocationGeocodedAddress | undefined): string | null {
@@ -184,9 +190,8 @@ export default function RegisterScreen() {
   const [isLocating, setIsLocating] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [created, setCreated] = useState<FoundItemResponse | null>(null);
-  const [pendingCreated, setPendingCreated] = useState<FoundItemResponse | null>(null);
-  const [uploadedImageUris, setUploadedImageUris] = useState<Set<string>>(() => new Set());
-  const [featureSaveFailed, setFeatureSaveFailed] = useState(false);
+  const [draft, setDraft] = useState<FoundItemDraftResponse | null>(null);
+  const [confirmedColor, setConfirmedColor] = useState<string | null>(null);
   const [isHandoverOpen, setIsHandoverOpen] = useState(false);
   const [isHandoverCompleted, setIsHandoverCompleted] = useState(false);
 
@@ -199,6 +204,73 @@ export default function RegisterScreen() {
       isMounted.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!draft) {
+      return;
+    }
+
+    const draftId = draft.id;
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function discardExpiredDraft() {
+      if (cancelled) return;
+      setDraft(null);
+      setConfirmedColor(null);
+      setStep(1);
+      setBanner({
+        title: '등록하지 못했어요',
+        body: '잠시 후 다시 시도해 주세요.',
+      });
+    }
+
+    const expiresAt = Date.parse(draft.draftExpiresAt);
+    if (Number.isFinite(expiresAt)) {
+      const remainingMs = expiresAt - Date.now();
+      if (remainingMs <= 0) {
+        discardExpiredDraft();
+        return;
+      }
+      expiryTimer = setTimeout(discardExpiredDraft, remainingMs);
+    }
+
+    if (draft.visionStatus === 'READY') {
+      return () => {
+        cancelled = true;
+        if (expiryTimer) clearTimeout(expiryTimer);
+      };
+    }
+
+    async function pollVision() {
+      try {
+        const response = await getFoundItem(draftId);
+        if (cancelled || response.status !== 'DRAFT') return;
+
+        setDraft(response);
+        if (response.visionStatus === 'READY') {
+          return;
+        }
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'NOT_FOUND') {
+          discardExpiredDraft();
+          return;
+        }
+      }
+
+      if (!cancelled) {
+        pollTimer = setTimeout(() => void pollVision(), 1500);
+      }
+    }
+
+    pollTimer = setTimeout(() => void pollVision(), 1500);
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      if (expiryTimer) clearTimeout(expiryTimer);
+    };
+  }, [draft]);
 
   const loadCenters = useCallback(async () => {
     setIsLoadingCenters(true);
@@ -259,7 +331,7 @@ export default function RegisterScreen() {
   }
 
   function acceptAssets(assets: ImagePicker.ImagePickerAsset[]): ImagePicker.ImagePickerAsset[] {
-    const imageLimit = pendingCreated?.expectedImageCount ?? MAX_IMAGE_COUNT;
+    const imageLimit = MAX_IMAGE_COUNT;
     const room = imageLimit - images.length;
     const usedSortOrders = new Set(images.map((image) => image.sortOrder));
     const availableSortOrders = Array.from(
@@ -293,11 +365,14 @@ export default function RegisterScreen() {
         contentType,
         sizeBytes,
         sortOrder: availableSortOrders[accepted.length],
+        file: asset.file,
       });
       acceptedAssets.push(asset);
     }
 
     if (accepted.length > 0) {
+      setDraft(null);
+      setConfirmedColor(null);
       setImages((current) => [...current, ...accepted]);
     }
 
@@ -343,7 +418,7 @@ export default function RegisterScreen() {
   }
 
   async function handleTakePhoto() {
-    const imageLimit = pendingCreated?.expectedImageCount ?? MAX_IMAGE_COUNT;
+    const imageLimit = MAX_IMAGE_COUNT;
     if (images.length >= imageLimit) {
       setFieldErrors((current) => ({
         ...current,
@@ -385,9 +460,8 @@ export default function RegisterScreen() {
   }
 
   function handleRemovePhoto(index: number) {
-    if (uploadedImageUris.has(images[index]?.uri)) {
-      return;
-    }
+    setDraft(null);
+    setConfirmedColor(null);
     setImages((current) => current.filter((_, position) => position !== index));
     clearFieldError('expectedImageCount');
   }
@@ -480,8 +554,6 @@ export default function RegisterScreen() {
     if (target === 1) {
       if (images.length === 0) {
         errors.expectedImageCount = '사진을 최소 한 장 촬영해 주세요.';
-      } else if (pendingCreated && images.length !== pendingCreated.expectedImageCount) {
-        errors.expectedImageCount = `실패한 사진을 다시 촬영해 총 ${pendingCreated.expectedImageCount}장을 채워 주세요.`;
       }
     }
 
@@ -499,6 +571,9 @@ export default function RegisterScreen() {
       } else if (description.trim().length > DESCRIPTION_MAX_LENGTH) {
         errors.description = `특징은 ${DESCRIPTION_MAX_LENGTH}자까지 쓸 수 있어요.`;
       }
+      if (!confirmedColor) {
+        errors.description = FIELD_ERROR_MESSAGES.description;
+      }
     }
 
     if (target === 2) {
@@ -515,31 +590,6 @@ export default function RegisterScreen() {
 
       if (!foundCoords) {
         errors.location = FIELD_ERROR_MESSAGES.location;
-      }
-    }
-
-    if (target === 4) {
-      if (!storageMethod) {
-        errors.storageMethod = '보관 상태를 선택해 주세요.';
-        return errors;
-      }
-
-      const storageErrors = validateStorageFields({
-        storageMethod,
-        storageDesc,
-        centerId,
-        handedAt: handedAt ? toUtcIso(handedAt) : null,
-      });
-      for (const field of Object.keys(storageErrors) as (keyof typeof storageErrors)[]) {
-        errors[field] = FIELD_ERROR_MESSAGES[field];
-      }
-
-      if (storageMethod === 'HANDED_TO_CENTER' && handedAt && foundAt) {
-        if (handedAt.getTime() < foundAt.getTime()) {
-          errors.handedAt = '인계 시각은 습득 일시보다 빠를 수 없어요.';
-        } else if (handedAt.getTime() > Date.now()) {
-          errors.handedAt = '인계 시각은 미래일 수 없어요.';
-        }
       }
     }
 
@@ -569,7 +619,7 @@ export default function RegisterScreen() {
     return errors;
   }
 
-  function handleNext() {
+  async function handleNext() {
     const errors = validateFormStep(step);
     setFieldErrors(errors);
 
@@ -579,6 +629,26 @@ export default function RegisterScreen() {
         body: '빨간 글씨로 표시한 항목을 채우면 다음 단계로 넘어갈 수 있어요.',
       });
       return;
+    }
+
+    if (step === 1 && (!draft || isDraftExpired(draft))) {
+      setIsSubmitting(true);
+      setBanner(null);
+      try {
+        const createdDraft = await createFoundItemDraft(images);
+        if (!isMounted.current) return;
+        setDraft(createdDraft);
+      } catch (error) {
+        if (!isMounted.current) return;
+        if (error instanceof ApiError && error.code === 'UNAUTHENTICATED') return;
+        setBanner({
+          title: '사진을 모두 올리지 못했어요',
+          body: error instanceof ApiError ? error.message : '잠시 후 다시 시도해 주세요.',
+        });
+        return;
+      } finally {
+        if (isMounted.current) setIsSubmitting(false);
+      }
     }
 
     setBanner(null);
@@ -592,46 +662,6 @@ export default function RegisterScreen() {
       return;
     }
     router.replace('/home');
-  }
-
-  async function finalizeImages(itemId: string): Promise<boolean> {
-    let allSucceeded = true;
-    const succeededUris = new Set(uploadedImageUris);
-
-    for (const image of images) {
-      if (succeededUris.has(image.uri)) {
-        continue;
-      }
-
-      try {
-        await uploadFoundItemImage(itemId, image, image.sortOrder);
-        succeededUris.add(image.uri);
-      } catch {
-        allSucceeded = false;
-      }
-    }
-
-    setUploadedImageUris(succeededUris);
-    return allSucceeded;
-  }
-
-  async function savePublicDescription(itemId: string): Promise<boolean> {
-    const request: CreateItemFeatureRequest = {
-      kind: 'PUBLIC_DESCRIPTION',
-      value: `${name.trim()}: ${description.trim()}`,
-      visibility: 'CANDIDATE_VIEW',
-      ordinal: 0,
-    };
-
-    try {
-      await apiRequest<ItemFeatureResponse>(`/found-items/${itemId}/features`, {
-        method: 'POST',
-        json: request,
-      });
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   async function handleSubmit() {
@@ -653,77 +683,71 @@ export default function RegisterScreen() {
       return;
     }
 
+    if (!draft || isDraftExpired(draft)) {
+      setDraft(null);
+      setConfirmedColor(null);
+      setStep(1);
+      setBanner({
+        title: '등록하지 못했어요',
+        body: '잠시 후 다시 시도해 주세요.',
+      });
+      return;
+    }
+
     setIsSubmitting(true);
     setBanner(null);
-    const plansCenterHandover = storageMethod === 'HANDED_TO_CENTER';
-    const requestStorageMethod: StorageMethod = plansCenterHandover
-      ? 'MOVED_TO_SAFE_PLACE'
-      : storageMethod;
-
-    // v1에는 인계 예정 상태가 없어 현재 보관 상태로 생성한 뒤 실제 인계 때 전환한다.
-    const storageFields = normalizeStorageFields({
-      storageMethod: requestStorageMethod,
-      storageDesc: plansCenterHandover ? PENDING_CENTER_STORAGE_DESC : storageDesc,
-      centerId: null,
-      handedAt: null,
-    });
-
-    const request: CreateFoundItemRequest = {
-      category,
-      foundAt: toUtcIso(foundAt),
-      location: foundCoords,
-      storageMethod: requestStorageMethod,
-      expectedImageCount: images.length,
-      ...storageFields,
-    };
 
     try {
-      const item = pendingCreated
-        ? await apiRequest<FoundItemResponse>(`/found-items/${pendingCreated.id}`, {
-            method: 'PATCH',
-            json: {
-              category: request.category,
-              foundAt: request.foundAt,
-              location: request.location,
-              storageMethod: request.storageMethod,
-              storageDesc: request.storageDesc ?? null,
-              centerId: request.centerId ?? null,
-              handedAt: request.handedAt ?? null,
-              expectedImageCount: request.expectedImageCount,
-            } satisfies UpdateFoundItemRequest,
-          })
-        : await apiRequest<FoundItemResponse>('/found-items', {
-            method: 'POST',
-            json: request,
-          });
-
-      setPendingCreated(item);
-      const uploaded = await finalizeImages(item.id);
-      if (!isMounted.current) return;
-
-      if (!uploaded) {
-        setStep(1);
-        setFieldErrors({
-          expectedImageCount: '올라가지 않은 사진을 삭제하고 다시 촬영해 주세요.',
-        });
+      if (!confirmedColor) {
+        setStep(3);
+        setFieldErrors({ description: FIELD_ERROR_MESSAGES.description });
         setBanner({
-          title: '사진을 모두 올리지 못했어요',
-          body: '삭제 버튼이 표시된 사진을 다시 촬영하면 이어서 등록할 수 있어요.',
+          title: '입력한 내용을 다시 확인해 주세요',
+          body: '표시한 항목을 고치면 등록할 수 있어요.',
         });
         return;
       }
 
-      const featureSaved = await savePublicDescription(item.id);
+      const request: CompleteFoundItemDraftRequest = {
+        category,
+        foundAt: toUtcIso(foundAt),
+        foundLocation: foundCoords,
+        confirmedFeatures: {
+          color: confirmedColor,
+          publicDescription: `${name.trim()}: ${description.trim()}`,
+        },
+        storageMethod,
+        ...(storageMethod === 'MOVED_TO_SAFE_PLACE'
+          ? { storageDesc: storageDesc.trim() }
+          : {}),
+        ...(storageMethod === 'HANDED_TO_CENTER' ? { centerId } : {}),
+      };
+      await completeFoundItemDraft(draft.id, request);
+      const item = await getFoundItem(draft.id);
       if (!isMounted.current) return;
+      if (item.status === 'DRAFT') {
+        throw new Error('Draft completion did not transition the item.');
+      }
 
-      setFeatureSaveFailed(!featureSaved);
-      setPendingCreated(null);
-      setUploadedImageUris(new Set());
+      setDraft(null);
       setIsHandoverOpen(false);
-      setHandedAt(plansCenterHandover ? handedAt ?? new Date() : null);
       setCreated(item);
     } catch (error) {
       if (!isMounted.current) return;
+
+      if (
+        error instanceof ApiError &&
+        (error.code === 'NOT_FOUND' || error.code === 'INVALID_STATE_TRANSITION')
+      ) {
+        setDraft(null);
+        setConfirmedColor(null);
+        setStep(1);
+        setBanner({
+          title: '등록하지 못했어요',
+          body: '잠시 후 다시 시도해 주세요.',
+        });
+        return;
+      }
 
       if (error instanceof ApiError && error.code === 'VALIDATION_ERROR') {
         const nextErrors: FieldErrors = {};
@@ -791,11 +815,10 @@ export default function RegisterScreen() {
 
   function handleRegisterAnother() {
     setCreated(null);
-    setPendingCreated(null);
-    setUploadedImageUris(new Set());
+    setDraft(null);
+    setConfirmedColor(null);
     setIsHandoverOpen(false);
     setIsHandoverCompleted(false);
-    setFeatureSaveFailed(false);
     setStep(1);
     setImages([]);
     setName('');
@@ -838,22 +861,11 @@ export default function RegisterScreen() {
       return;
     }
 
-    const request: UpdateFoundItemRequest = {
-      storageMethod: 'HANDED_TO_CENTER',
-      storageDesc: null,
-      centerId,
-      handedAt: toUtcIso(handedAt),
-    };
-
     setIsSubmitting(true);
     setBanner(null);
     try {
-      const updated = await apiRequest<FoundItemResponse>(`/found-items/${created.id}`, {
-        method: 'PATCH',
-        json: request,
-      });
+      await confirmFoundItemHandover(created.id);
       if (!isMounted.current) return;
-      setCreated(updated);
       setIsHandoverCompleted(true);
     } catch (error) {
       if (!isMounted.current) return;
@@ -872,7 +884,7 @@ export default function RegisterScreen() {
     created !== null &&
     storageMethod === 'HANDED_TO_CENTER' &&
     selectedCenter !== null &&
-    created.storageMethod !== 'HANDED_TO_CENTER';
+    !isHandoverCompleted;
   const dateTimeSheet = (
     <DateTimeSheet
       editableParts={dateTarget ? ['minute'] : undefined}
@@ -928,7 +940,7 @@ export default function RegisterScreen() {
         item={created}
         itemName={name.trim()}
         centerName={selectedCenter?.name ?? null}
-        featureSaveFailed={featureSaveFailed}
+        featureSaveFailed={false}
         onGoHome={handleGoHome}
         onOpenHandover={() => {
           setIsHandoverCompleted(false);
@@ -958,9 +970,9 @@ export default function RegisterScreen() {
 
             {step === 1 ? (
               <RegisterPhotoStep
-                canRemovePhoto={(image) => !uploadedImageUris.has(image.uri)}
+                canRemovePhoto={() => true}
                 errors={fieldErrors}
-                imageLimit={pendingCreated?.expectedImageCount ?? MAX_IMAGE_COUNT}
+                imageLimit={MAX_IMAGE_COUNT}
                 images={images}
                 onRemovePhoto={handleRemovePhoto}
                 onTakePhoto={handleTakePhoto}
@@ -991,10 +1003,15 @@ export default function RegisterScreen() {
             {step === 3 ? (
               <RegisterItemInfoStep
                 categoryLabel={categoryLabel}
+                confirmedColor={confirmedColor}
                 description={description}
                 errors={fieldErrors}
                 isCategoryOpen={isCategoryOpen}
                 name={name}
+                onConfirmColor={(color) => {
+                  setConfirmedColor(color);
+                  clearFieldError('description');
+                }}
                 onChangeDescription={(value) => {
                   setDescription(value);
                   clearFieldError('description');
@@ -1004,6 +1021,7 @@ export default function RegisterScreen() {
                   clearFieldError('name');
                 }}
                 onOpenCategory={() => setIsCategoryOpen(true)}
+                visionSuggestion={draft?.visionSuggestion ?? null}
               />
             ) : null}
 
@@ -1034,7 +1052,7 @@ export default function RegisterScreen() {
             accessibilityRole="button"
             accessibilityState={{ busy: isSubmitting, disabled: isSubmitting }}
             disabled={isSubmitting}
-            onPress={step === 4 ? handleFinalStepSubmit : handleNext}
+            onPress={step === 4 ? handleFinalStepSubmit : () => void handleNext()}
             style={({ pressed }) => [
               styles.primaryButton,
               { backgroundColor: colors.action },

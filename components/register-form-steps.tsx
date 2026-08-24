@@ -28,6 +28,7 @@ import {
   type GeoPoint,
   type LostCenter,
   type StorageMethod,
+  type VisionSuggestion,
 } from '@/src/types/found-item';
 
 export const NAME_MAX_LENGTH = 100;
@@ -41,7 +42,26 @@ const STORAGE_OPTIONS: { value: StorageMethod; label: string }[] = [
   { value: 'HANDED_TO_CENTER', label: '분실물 센터에 맡길게요' },
 ];
 
-const AI_FEATURE_SUGGESTIONS = ['검정색', '가죽', '카드 여러 장', '지퍼 있음', '브랜드 로고'];
+const COLOR_LABELS: Record<string, string> = {
+  BLACK: '검정색',
+  BLUE: '파란색',
+  BROWN: '갈색',
+  GOLD: '금색',
+  GRAY: '회색',
+  GREEN: '초록색',
+  NAVY: '남색',
+  ORANGE: '주황색',
+  PINK: '분홍색',
+  PURPLE: '보라색',
+  RED: '빨간색',
+  SILVER: '은색',
+  WHITE: '흰색',
+  YELLOW: '노란색',
+};
+
+function colorLabel(color: string): string {
+  return COLOR_LABELS[color.toUpperCase()] ?? color;
+}
 
 type StepErrors = Partial<
   Record<
@@ -151,24 +171,30 @@ export function RegisterPhotoStep({
 
 type ItemInfoStepProps = {
   categoryLabel: string | null;
+  confirmedColor: string | null;
   description: string;
   errors: StepErrors;
   isCategoryOpen: boolean;
   name: string;
+  onConfirmColor: (color: string) => void;
   onChangeDescription: (value: string) => void;
   onChangeName: (value: string) => void;
   onOpenCategory: () => void;
+  visionSuggestion: VisionSuggestion | null;
 };
 
 export function RegisterItemInfoStep({
   categoryLabel,
+  confirmedColor,
   description,
   errors,
   isCategoryOpen,
   name,
+  onConfirmColor,
   onChangeDescription,
   onChangeName,
   onOpenCategory,
+  visionSuggestion,
 }: ItemInfoStepProps) {
   const colors = useAppColors();
   const inputShell = { backgroundColor: colors.surface, borderColor: colors.lineStrong };
@@ -183,6 +209,24 @@ export function RegisterItemInfoStep({
     }
 
     onChangeDescription([...values, feature].join(', ').slice(0, DESCRIPTION_MAX_LENGTH));
+  }
+
+  function handleColorPress() {
+    if (!visionSuggestion) {
+      return;
+    }
+
+    onConfirmColor(visionSuggestion.color);
+    handleFeaturePress(colorLabel(visionSuggestion.color));
+  }
+
+  function handlePublicDescriptionPress() {
+    if (!visionSuggestion) {
+      return;
+    }
+
+    onConfirmColor(visionSuggestion.color);
+    handleFeaturePress(visionSuggestion.publicDescription);
   }
 
   return (
@@ -249,17 +293,23 @@ export function RegisterItemInfoStep({
           />
           <FieldError message={errors.description} />
           <View style={styles.chipRow}>
-            {AI_FEATURE_SUGGESTIONS.map((feature) => (
+            {visionSuggestion ? (
               <Chip
-                key={feature}
-                label={feature}
-                onPress={() => handleFeaturePress(feature)}
+                label={colorLabel(visionSuggestion.color)}
+                onPress={handleColorPress}
+                selected={confirmedColor === visionSuggestion.color}
+              />
+            ) : null}
+            {visionSuggestion?.publicDescription ? (
+              <Chip
+                label={visionSuggestion.publicDescription}
+                onPress={handlePublicDescriptionPress}
                 selected={description
                   .split(',')
                   .map((value) => value.trim())
-                  .includes(feature)}
+                  .includes(visionSuggestion.publicDescription)}
               />
-            ))}
+            ) : null}
           </View>
           <View style={styles.aiNoteRow}>
             <SymbolView name={ICONS.ai} size={12} tintColor={colors.bronze700} />
