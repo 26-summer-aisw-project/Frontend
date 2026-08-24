@@ -1,4 +1,8 @@
-export type FoundItemStatus = 'PROCESSING' | 'ACTIVE' | 'EXPIRED' | 'RETURNED';
+export type FoundItemStatus = 'DRAFT' | 'PROCESSING' | 'ACTIVE' | 'EXPIRED' | 'RETURNED';
+
+export type RegisteredFoundItemStatus = Exclude<FoundItemStatus, 'DRAFT'>;
+
+export type VisionStatus = 'PENDING' | 'READY';
 
 export type StorageMethod = 'LEFT_IN_PLACE' | 'MOVED_TO_SAFE_PLACE' | 'HANDED_TO_CENTER';
 
@@ -19,30 +23,37 @@ export function isValidGeoPoint(point: GeoPoint | null | undefined): point is Ge
   );
 }
 
-export interface CreateFoundItemRequest {
+export interface VisionSuggestion {
+  color: string;
+  publicDescription: string;
+}
+
+export interface FoundItemDraftResponse {
+  id: string;
+  status: 'DRAFT';
+  uploadedImageCount?: number;
+  expectedImageCount?: number;
+  visionStatus: VisionStatus;
+  visionSuggestion?: VisionSuggestion;
+  draftExpiresAt: string;
+}
+
+export interface ConfirmedFeatures {
+  color: string;
+  publicDescription: string;
+}
+
+export interface CompleteFoundItemDraftRequest {
   category: string;
   foundAt: string;
-  location: GeoPoint;
+  foundLocation: GeoPoint;
+  confirmedFeatures: ConfirmedFeatures;
   storageMethod: StorageMethod;
   storageDesc?: string | null;
   centerId?: string | null;
-  handedAt?: string | null;
-  expectedImageCount: number;
 }
 
-export type UpdateFoundItemRequest = Partial<
-  Pick<
-    CreateFoundItemRequest,
-    | 'category'
-    | 'foundAt'
-    | 'location'
-    | 'storageMethod'
-    | 'storageDesc'
-    | 'centerId'
-    | 'handedAt'
-    | 'expectedImageCount'
-  >
->;
+export type UpdateFoundItemRequest = Partial<CompleteFoundItemDraftRequest>;
 
 export interface FoundItemResponse {
   id: string;
@@ -55,12 +66,14 @@ export interface FoundItemResponse {
   centerId: string | null;
   handedAt: string | null;
   expectedImageCount: number;
-  status: FoundItemStatus;
+  status: RegisteredFoundItemStatus;
   expiredAt: string;
   returnSource: ReturnSource | null;
   createdAt: string;
   updatedAt: string;
 }
+
+export type FoundItemDetailResponse = FoundItemDraftResponse | FoundItemResponse;
 
 export interface LostCenter {
   id: string;
@@ -174,45 +187,19 @@ export function validateStorageFields(input: {
     if (!hasCenterId) {
       errors.centerId = 'REQUIRED';
     }
-    if (!hasHandedAt) {
-      errors.handedAt = 'REQUIRED';
-    }
   }
 
   if (input.storageMethod !== 'MOVED_TO_SAFE_PLACE' && hasStorageDesc) {
     errors.storageDesc = 'FORBIDDEN';
   }
 
-  if (input.storageMethod !== 'HANDED_TO_CENTER') {
-    if (hasCenterId) {
-      errors.centerId = 'FORBIDDEN';
-    }
-    if (hasHandedAt) {
-      errors.handedAt = 'FORBIDDEN';
-    }
+  if (input.storageMethod !== 'HANDED_TO_CENTER' && hasCenterId) {
+    errors.centerId = 'FORBIDDEN';
+  }
+
+  if (hasHandedAt) {
+    errors.handedAt = 'FORBIDDEN';
   }
 
   return errors;
-}
-
-export function normalizeStorageFields(input: {
-  storageMethod: StorageMethod;
-  storageDesc?: string | null;
-  centerId?: string | null;
-  handedAt?: string | null;
-}): Partial<Pick<CreateFoundItemRequest, 'storageDesc' | 'centerId' | 'handedAt'>> {
-  switch (input.storageMethod) {
-    case 'MOVED_TO_SAFE_PLACE':
-      return {
-        storageDesc: (input.storageDesc ?? '').trim() || null,
-      };
-    case 'HANDED_TO_CENTER':
-      return {
-        centerId: input.centerId ?? null,
-        handedAt: input.handedAt ?? null,
-      };
-    case 'LEFT_IN_PLACE':
-    default:
-      return {};
-  }
 }

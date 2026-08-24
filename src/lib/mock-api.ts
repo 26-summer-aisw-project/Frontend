@@ -7,10 +7,11 @@ import {
   MAX_IMAGE_COUNT,
   isValidGeoPoint,
   validateStorageFields,
-  type CreateFoundItemRequest,
+  type CompleteFoundItemDraftRequest,
   type CreateItemFeatureRequest,
   type FinalizeImageRequest,
   type FoundItemImageResponse,
+  type FoundItemDraftResponse,
   type FoundItemResponse,
   type ImageUploadGrant,
   type ItemFeatureResponse,
@@ -31,6 +32,10 @@ const MOCK_CREATED_AT = '2026-08-18T09:30:00Z';
 const mockUsers = new Map<string, UserResponse>();
 
 const mockFoundItems = new Map<string, FoundItemResponse>();
+const mockFoundDrafts = new Map<
+  string,
+  FoundItemDraftResponse & { pollCount: number }
+>();
 const mockFeatures = new Map<string, ItemFeatureResponse[]>();
 const mockUploadRequests = new Map<
   string,
@@ -100,6 +105,19 @@ function parseJsonBody<T>(body: BodyInit | null | undefined): T | null {
   }
 }
 
+function formDataValues(body: BodyInit | null | undefined, name: string): unknown[] {
+  if (!(body instanceof FormData)) {
+    return [];
+  }
+
+  if (typeof body.getAll === 'function') {
+    return body.getAll(name);
+  }
+
+  const parts = (body as FormData & { _parts?: [string, unknown][] })._parts ?? [];
+  return parts.filter(([key]) => key === name).map(([, value]) => value);
+}
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -107,6 +125,10 @@ function jsonResponse(status: number, body: unknown): Response {
       'Content-Type': 'application/json',
     },
   });
+}
+
+function emptyResponse(status: number): Response {
+  return new Response(null, { status });
 }
 
 function errorResponse(
@@ -194,103 +216,6 @@ function isoAfterDays(from: Date, days: number): string {
 
 function nowIso(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-}
-
-function validateCreateFoundItem(request: CreateFoundItemRequest | null): ErrorDetail[] {
-  if (!request) {
-    return [{ field: 'body', reason: 'Required.' }];
-  }
-
-  const details: ErrorDetail[] = [];
-  if (normalizeString(request.category).length === 0) {
-    details.push({ field: 'category', reason: 'Required.' });
-  }
-
-  if (!request.foundAt || !Number.isFinite(Date.parse(request.foundAt))) {
-    details.push({ field: 'foundAt', reason: 'Required.' });
-  } else if (Date.parse(request.foundAt) > Date.now()) {
-    details.push({ field: 'foundAt', reason: 'Must not be in the future.' });
-  }
-
-  if (!isValidGeoPoint(request.location)) {
-    details.push({ field: 'location', reason: 'Required.' });
-  }
-
-  if (!['LEFT_IN_PLACE', 'MOVED_TO_SAFE_PLACE', 'HANDED_TO_CENTER'].includes(request.storageMethod)) {
-    details.push({ field: 'storageMethod', reason: 'Required.' });
-  }
-
-  if (
-    typeof request.expectedImageCount !== 'number' ||
-    !Number.isInteger(request.expectedImageCount) ||
-    request.expectedImageCount < 1 ||
-    request.expectedImageCount > MAX_IMAGE_COUNT
-  ) {
-    details.push({
-      field: 'expectedImageCount',
-      reason: `Must be between 1 and ${MAX_IMAGE_COUNT}.`,
-    });
-  }
-
-  for (const [field, reason] of Object.entries(validateStorageFields(request))) {
-    details.push({
-      field,
-      reason: reason === 'REQUIRED' ? 'Required.' : 'Not allowed for this storage method.',
-    });
-  }
-
-  if (request.storageMethod === 'HANDED_TO_CENTER') {
-    if (request.handedAt && request.foundAt) {
-      const foundAt = Date.parse(request.foundAt);
-      const handedAt = Date.parse(request.handedAt);
-      if (!Number.isFinite(handedAt)) {
-        details.push({ field: 'handedAt', reason: 'Must be an RFC 3339 timestamp.' });
-      } else if (Number.isFinite(foundAt)) {
-        if (handedAt < foundAt) {
-          details.push({ field: 'handedAt', reason: 'Must not be before foundAt.' });
-        } else if (handedAt > Date.now()) {
-          details.push({ field: 'handedAt', reason: 'Must not be in the future.' });
-        }
-      }
-    }
-
-    const center = MOCK_LOST_CENTERS.find((candidate) => candidate.id === request.centerId);
-    if (!center || !center.isActive) {
-      details.push({ field: 'centerId', reason: 'Must reference an active center.' });
-    }
-  }
-
-  return details;
-}
-
-function createFoundItem(request: CreateFoundItemRequest): FoundItemResponse {
-  nextFoundItemId += 1;
-  const timestamp = nowIso();
-  const center = MOCK_LOST_CENTERS.find((candidate) => candidate.id === request.centerId);
-  // 만료 기준점은 인계 시각이고, 인계하지 않았으면 습득 시각이다.
-  const retentionStart = new Date(request.handedAt ?? request.foundAt ?? timestamp);
-  const retentionDays = center?.retentionDays ?? DEFAULT_RETENTION_DAYS;
-
-  const item: FoundItemResponse = {
-    id: String(nextFoundItemId),
-    finderId: MOCK_USER_ID,
-    category: normalizeString(request.category),
-    foundAt: request.foundAt,
-    location: request.location,
-    storageMethod: request.storageMethod,
-    storageDesc: normalizeString(request.storageDesc) || null,
-    centerId: request.centerId ?? null,
-    handedAt: request.handedAt ?? null,
-    expectedImageCount: request.expectedImageCount,
-    status: 'PROCESSING',
-    expiredAt: isoAfterDays(retentionStart, retentionDays),
-    returnSource: null,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-
-  mockFoundItems.set(item.id, item);
-  return item;
 }
 
 export async function mockApiRequest(
@@ -392,16 +317,40 @@ export async function mockApiRequest(
       : errorResponse(404, 'NOT_FOUND', '요청한 정보를 찾을 수 없습니다.');
   }
 
-  if (method === 'POST' && normalizedPath === '/found-items') {
-    const request = parseJsonBody<CreateFoundItemRequest>(options.body);
-    const details = validateCreateFoundItem(request);
+  if (method === 'POST' && normalizedPath === '/found-items/drafts') {
+    const images = formDataValues(options.body, 'images');
+    const totalImageCount = Number(formDataValues(options.body, 'totalImageCount')[0]);
+    const details: ErrorDetail[] = [];
 
-    if (details.length > 0 || !request) {
+    if (
+      !Number.isInteger(totalImageCount) ||
+      totalImageCount < 1 ||
+      totalImageCount > MAX_IMAGE_COUNT
+    ) {
+      details.push({ field: 'totalImageCount', reason: `Must be between 1 and ${MAX_IMAGE_COUNT}.` });
+    }
+    if (images.length !== totalImageCount) {
+      details.push({ field: 'images', reason: 'Must match totalImageCount.' });
+    }
+    if (details.length > 0) {
       return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', details);
     }
 
-    const item = createFoundItem(request);
-    return jsonResponse(201, item);
+    nextFoundItemId += 1;
+    const draft: FoundItemDraftResponse & { pollCount: number } = {
+      id: String(nextFoundItemId),
+      status: 'DRAFT',
+      uploadedImageCount: images.length,
+      expectedImageCount: totalImageCount,
+      visionStatus: 'PENDING',
+      draftExpiresAt: new Date(Date.now() + 60 * 60 * 1000)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, 'Z'),
+      pollCount: 0,
+    };
+    mockFoundDrafts.set(draft.id, draft);
+    const { pollCount: _, ...response } = draft;
+    return jsonResponse(201, response);
   }
 
   if (method === 'GET' && normalizedPath === '/found-items') {
@@ -415,6 +364,35 @@ export async function mockApiRequest(
         totalPages: Math.max(1, Math.ceil(items.length / 20)),
       },
     });
+  }
+
+  const draftDetailMatch = method === 'GET' ? matchPath('/found-items/*', normalizedPath) : null;
+  if (draftDetailMatch) {
+    const draft = mockFoundDrafts.get(draftDetailMatch[0]);
+    if (draft) {
+      const isReady = draft.pollCount > 0;
+      const nextDraft: FoundItemDraftResponse & { pollCount: number } = {
+        ...draft,
+        pollCount: draft.pollCount + 1,
+        visionStatus: isReady ? 'READY' : 'PENDING',
+        ...(isReady
+          ? {
+              visionSuggestion: {
+                color: 'BLACK',
+                publicDescription: '검은 카드 지갑',
+              },
+            }
+          : {}),
+      };
+      mockFoundDrafts.set(nextDraft.id, nextDraft);
+      return jsonResponse(200, {
+        id: nextDraft.id,
+        status: nextDraft.status,
+        visionStatus: nextDraft.visionStatus,
+        visionSuggestion: nextDraft.visionSuggestion,
+        draftExpiresAt: nextDraft.draftExpiresAt,
+      } satisfies FoundItemDraftResponse);
+    }
   }
 
   const uploadRequestMatch =
@@ -553,9 +531,160 @@ export async function mockApiRequest(
     return jsonResponse(201, feature);
   }
 
+  const confirmHandoverMatch =
+    method === 'POST'
+      ? normalizedPath.match(/^\/found-items\/([^/]+):confirm-handover$/)
+      : null;
+  if (confirmHandoverMatch) {
+    const request = parseJsonBody<Record<string, unknown>>(options.body);
+    if (!request || Object.keys(request).length > 0) {
+      return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', [
+        { field: 'body', reason: 'Must be an empty JSON object.' },
+      ]);
+    }
+
+    const item = mockFoundItems.get(confirmHandoverMatch[1]);
+    if (!item) {
+      return errorResponse(404, 'NOT_FOUND', '요청한 정보를 찾을 수 없습니다.');
+    }
+    const center = MOCK_LOST_CENTERS.find((value) => value.id === item.centerId);
+    if (item.storageMethod !== 'HANDED_TO_CENTER' || !center?.isActive) {
+      return errorResponse(
+        422,
+        'INVALID_STATE_TRANSITION',
+        '현재 상태에서는 변경할 수 없습니다.',
+      );
+    }
+    if (item.handedAt) {
+      return emptyResponse(204);
+    }
+
+    const handedAt = nowIso();
+    mockFoundItems.set(item.id, {
+      ...item,
+      handedAt,
+      expiredAt: isoAfterDays(
+        new Date(handedAt),
+        center.retentionDays ?? DEFAULT_RETENTION_DAYS,
+      ),
+      updatedAt: handedAt,
+    });
+    return emptyResponse(204);
+  }
+
   const updateItemMatch =
     method === 'PATCH' ? matchPath('/found-items/*', normalizedPath) : null;
   if (updateItemMatch) {
+    const draft = mockFoundDrafts.get(updateItemMatch[0]);
+    if (draft) {
+      const request = parseJsonBody<CompleteFoundItemDraftRequest>(options.body);
+      const details: ErrorDetail[] = [];
+
+      if (!request || normalizeString(request.category).length === 0) {
+        details.push({ field: 'category', reason: 'Required.' });
+      }
+      if (!request?.foundAt || !Number.isFinite(Date.parse(request.foundAt))) {
+        details.push({ field: 'foundAt', reason: 'Required.' });
+      } else if (Date.parse(request.foundAt) > Date.now()) {
+        details.push({ field: 'foundAt', reason: 'Must not be in the future.' });
+      }
+      if (!request || !isValidGeoPoint(request.foundLocation)) {
+        details.push({ field: 'foundLocation', reason: 'Required.' });
+      }
+      if (!request || normalizeString(request.confirmedFeatures?.color).length === 0) {
+        details.push({ field: 'confirmedFeatures', reason: 'Color is required.' });
+      }
+      if (!request || normalizeString(request.confirmedFeatures?.publicDescription).length === 0) {
+        details.push({ field: 'confirmedFeatures', reason: 'Public description is required.' });
+      }
+      if (
+        !request ||
+        !['LEFT_IN_PLACE', 'MOVED_TO_SAFE_PLACE', 'HANDED_TO_CENTER'].includes(
+          request.storageMethod,
+        )
+      ) {
+        details.push({ field: 'storageMethod', reason: 'Required.' });
+      }
+      if (request) {
+        for (const [field, reason] of Object.entries(validateStorageFields(request))) {
+          details.push({
+            field,
+            reason: reason === 'REQUIRED' ? 'Required.' : 'Not allowed for this storage method.',
+          });
+        }
+        const serverManagedFields = [
+          'handedAt',
+          'expiredAt',
+          'expectedImageCount',
+          'uploadedImageCount',
+          'visionStatus',
+          'status',
+          'draftExpiresAt',
+        ];
+        if (serverManagedFields.some((field) => field in request)) {
+          details.push({ field: 'body', reason: 'Contains server-managed fields.' });
+        }
+        if (request.storageMethod === 'HANDED_TO_CENTER') {
+          const center = MOCK_LOST_CENTERS.find((value) => value.id === request.centerId);
+          if (!center?.isActive) {
+            details.push({ field: 'centerId', reason: 'Must reference an active center.' });
+          }
+        }
+      }
+      if (draft.visionStatus !== 'READY') {
+        return errorResponse(
+          422,
+          'INVALID_STATE_TRANSITION',
+          '현재 상태에서는 변경할 수 없습니다.',
+        );
+      }
+      if (!request || details.length > 0) {
+        return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', details);
+      }
+
+      const timestamp = nowIso();
+      const item: FoundItemResponse = {
+        id: draft.id,
+        finderId: MOCK_USER_ID,
+        category: normalizeString(request.category),
+        foundAt: request.foundAt,
+        location: request.foundLocation,
+        storageMethod: request.storageMethod,
+        storageDesc: normalizeString(request.storageDesc) || null,
+        centerId: request.centerId ?? null,
+        handedAt: null,
+        expectedImageCount: draft.expectedImageCount ?? draft.uploadedImageCount ?? 1,
+        status: 'PROCESSING',
+        expiredAt: isoAfterDays(new Date(request.foundAt), DEFAULT_RETENTION_DAYS),
+        returnSource: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      mockFoundDrafts.delete(draft.id);
+      mockFoundItems.set(item.id, item);
+
+      const featureValues = [
+        ['COLOR', request.confirmedFeatures.color],
+        ['PUBLIC_DESCRIPTION', request.confirmedFeatures.publicDescription],
+      ] as const;
+      const features = featureValues.map(([kind, value], ordinal): ItemFeatureResponse => {
+        nextFeatureId += 1;
+        return {
+          id: String(nextFeatureId),
+          itemId: item.id,
+          kind,
+          value,
+          source: 'FINDER',
+          visibility: 'CANDIDATE_VIEW',
+          ordinal,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+      });
+      mockFeatures.set(item.id, features);
+      return jsonResponse(200, item);
+    }
+
     const item = mockFoundItems.get(updateItemMatch[0]);
     if (!item) {
       return errorResponse(404, 'NOT_FOUND', '요청한 정보를 찾을 수 없습니다.');
@@ -568,10 +697,24 @@ export async function mockApiRequest(
       ]);
     }
 
+    const serverManagedFields = [
+      'handedAt',
+      'expiredAt',
+      'expectedImageCount',
+      'uploadedImageCount',
+      'visionStatus',
+      'status',
+    ];
+    if (serverManagedFields.some((field) => field in request)) {
+      return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', [
+        { field: 'body', reason: 'Contains server-managed fields.' },
+      ]);
+    }
+
     if (
-      item.storageMethod === 'HANDED_TO_CENTER' &&
+      item.handedAt &&
       (('centerId' in request && request.centerId !== item.centerId) ||
-        ('handedAt' in request && request.handedAt !== item.handedAt))
+        ('storageMethod' in request && request.storageMethod !== item.storageMethod))
     ) {
       return errorResponse(
         422,
@@ -580,36 +723,107 @@ export async function mockApiRequest(
       );
     }
 
-    const candidate: CreateFoundItemRequest = {
-      category: request.category ?? item.category,
+    const currentFeatures = mockFeatures.get(item.id) ?? [];
+    const currentColor = currentFeatures.find((feature) => feature.kind === 'COLOR')?.value ?? '';
+    const currentDescription =
+      currentFeatures.find((feature) => feature.kind === 'PUBLIC_DESCRIPTION')?.value ?? '';
+    const candidate = {
+      category: 'category' in request ? normalizeString(request.category) : item.category,
       foundAt: request.foundAt ?? item.foundAt,
-      location: request.location ?? item.location,
+      foundLocation: request.foundLocation ?? item.location,
+      confirmedFeatures: request.confirmedFeatures ?? {
+        color: currentColor,
+        publicDescription: currentDescription,
+      },
       storageMethod: request.storageMethod ?? item.storageMethod,
       storageDesc: 'storageDesc' in request ? request.storageDesc : item.storageDesc,
       centerId: 'centerId' in request ? request.centerId : item.centerId,
-      handedAt: 'handedAt' in request ? request.handedAt : item.handedAt,
-      expectedImageCount: request.expectedImageCount ?? item.expectedImageCount,
     };
-    const details = validateCreateFoundItem(candidate);
+    const details: ErrorDetail[] = [];
+    if (candidate.category.length === 0) {
+      details.push({ field: 'category', reason: 'Required.' });
+    }
+    if (!Number.isFinite(Date.parse(candidate.foundAt))) {
+      details.push({ field: 'foundAt', reason: 'Required.' });
+    } else if (Date.parse(candidate.foundAt) > Date.now()) {
+      details.push({ field: 'foundAt', reason: 'Must not be in the future.' });
+    } else if (item.handedAt && Date.parse(candidate.foundAt) > Date.parse(item.handedAt)) {
+      details.push({ field: 'foundAt', reason: 'Must not be after handedAt.' });
+    }
+    if (!isValidGeoPoint(candidate.foundLocation)) {
+      details.push({ field: 'foundLocation', reason: 'Required.' });
+    }
+    if (normalizeString(candidate.confirmedFeatures?.color).length === 0) {
+      details.push({ field: 'confirmedFeatures', reason: 'Color is required.' });
+    }
+    if (normalizeString(candidate.confirmedFeatures?.publicDescription).length === 0) {
+      details.push({ field: 'confirmedFeatures', reason: 'Public description is required.' });
+    }
+    if (
+      !['LEFT_IN_PLACE', 'MOVED_TO_SAFE_PLACE', 'HANDED_TO_CENTER'].includes(
+        candidate.storageMethod,
+      )
+    ) {
+      details.push({ field: 'storageMethod', reason: 'Required.' });
+    }
+    for (const [field, reason] of Object.entries(validateStorageFields(candidate))) {
+      details.push({
+        field,
+        reason: reason === 'REQUIRED' ? 'Required.' : 'Not allowed for this storage method.',
+      });
+    }
+    if (candidate.storageMethod === 'HANDED_TO_CENTER') {
+      const center = MOCK_LOST_CENTERS.find((value) => value.id === candidate.centerId);
+      if (!center?.isActive) {
+        details.push({ field: 'centerId', reason: 'Must reference an active center.' });
+      }
+    }
     if (details.length > 0) {
       return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', details);
     }
 
-    const center = MOCK_LOST_CENTERS.find((value) => value.id === candidate.centerId);
-    const retentionStart = new Date(candidate.handedAt ?? candidate.foundAt);
+    const timestamp = nowIso();
     const updated: FoundItemResponse = {
       ...item,
-      ...candidate,
+      category: candidate.category,
+      foundAt: candidate.foundAt,
+      location: candidate.foundLocation,
+      storageMethod: candidate.storageMethod,
       storageDesc: candidate.storageDesc ?? null,
       centerId: candidate.centerId ?? null,
-      handedAt: candidate.handedAt ?? null,
-      expiredAt:
-        candidate.storageMethod === 'HANDED_TO_CENTER'
-          ? isoAfterDays(retentionStart, center?.retentionDays ?? DEFAULT_RETENTION_DAYS)
-          : item.expiredAt,
-      updatedAt: nowIso(),
+      expiredAt: item.handedAt
+        ? item.expiredAt
+        : isoAfterDays(new Date(candidate.foundAt), DEFAULT_RETENTION_DAYS),
+      updatedAt: timestamp,
     };
     mockFoundItems.set(updated.id, updated);
+
+    if (request.confirmedFeatures) {
+      const replacedKinds = new Set(['COLOR', 'PUBLIC_DESCRIPTION']);
+      const retainedFeatures = currentFeatures.filter((feature) => !replacedKinds.has(feature.kind));
+      const confirmedValues = [
+        ['COLOR', request.confirmedFeatures.color],
+        ['PUBLIC_DESCRIPTION', request.confirmedFeatures.publicDescription],
+      ] as const;
+      const confirmedFeatures = confirmedValues.map(([kind, value], ordinal) => {
+        const existing = currentFeatures.find((feature) => feature.kind === kind);
+        if (!existing) {
+          nextFeatureId += 1;
+        }
+        return {
+          id: existing?.id ?? String(nextFeatureId),
+          itemId: item.id,
+          kind,
+          value,
+          source: 'FINDER' as const,
+          visibility: 'CANDIDATE_VIEW' as const,
+          ordinal,
+          createdAt: existing?.createdAt ?? timestamp,
+          updatedAt: timestamp,
+        };
+      });
+      mockFeatures.set(item.id, [...retainedFeatures, ...confirmedFeatures]);
+    }
     return jsonResponse(200, updated);
   }
 
