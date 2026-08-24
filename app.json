@@ -8,9 +8,11 @@
     "scheme": "lostory",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "kr.lostory.app"
     },
     "android": {
+      "package": "kr.lostory.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -40,6 +42,12 @@
         {
           "photosPermission": "습득물 사진을 등록하기 위해 사진 접근 권한이 필요합니다.",
           "cameraPermission": "습득물 사진을 촬영하기 위해 카메라 권한이 필요합니다."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "습득 장소를 자동으로 채우기 위해 위치 권한이 필요합니다."
         }
       ]
     ],
