@@ -19,6 +19,7 @@ export const ICONS = {
   pin: { ios: 'mappin', android: 'location_on', web: 'location_on' },
   alert: { ios: 'exclamationmark.circle', android: 'error', web: 'error' },
   close: { ios: 'xmark', android: 'close', web: 'close' },
+  image: { ios: 'photo', android: 'image', web: 'image' },
   search: { ios: 'magnifyingglass', android: 'search', web: 'search' },
   shield: { ios: 'checkmark.shield', android: 'verified_user', web: 'verified_user' },
   minus: { ios: 'minus', android: 'remove', web: 'remove' },

@@ -2,7 +2,10 @@ import { apiRequest } from '@/src/lib/api';
 import { MOCK_API } from '@/src/config/env';
 import type { GeoPoint } from '@/src/types/found-item';
 import type {
+  ConfirmLostReportRecoveryRequest,
+  ConfirmLostReportRecoveryResponse,
   CreateLostReportRequest,
+  LostReportCandidatesResponse,
   LostReportResponse,
   LostTimeBand,
 } from '@/src/types/lost-report';
@@ -86,4 +89,32 @@ export async function createLostReport(
     method: 'POST',
     json: request,
   });
+}
+
+export async function getLostReportCandidates(
+  reportId: string,
+): Promise<LostReportCandidatesResponse> {
+  return apiRequest<LostReportCandidatesResponse>(`/lost-reports/${reportId}/candidates`);
+}
+
+export async function refreshLostReportCandidates(
+  reportId: string,
+): Promise<LostReportCandidatesResponse> {
+  return apiRequest<LostReportCandidatesResponse>(
+    `/lost-reports/${reportId}/candidates:refresh`,
+    { method: 'POST' },
+  );
+}
+
+export async function confirmLostReportRecovery(
+  reportId: string,
+  request: ConfirmLostReportRecoveryRequest,
+): Promise<ConfirmLostReportRecoveryResponse> {
+  return apiRequest<ConfirmLostReportRecoveryResponse>(
+    `/lost-reports/${reportId}:confirm-recovered`,
+    {
+      method: 'POST',
+      json: request,
+    },
+  );
 }
