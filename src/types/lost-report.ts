@@ -1,4 +1,4 @@
-import type { GeoPoint } from '@/src/types/found-item';
+import type { FoundItemResponse, GeoPoint } from '@/src/types/found-item';
 
 export const LOST_REPORT_RADIUS_METERS = 500;
 export const MIN_WAYPOINT_COUNT = 1;
@@ -39,5 +39,35 @@ export type LostReportResponse = CreateLostReportRequest & {
   resolvedAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type LostReportCandidate = {
+  candidateId: string;
+  rank: number;
+  score: number;
+  category: string;
+  publicDescription: string;
+  color: string;
+  foundDate: string;
+  thumbnailUrl: string | null;
+  centerName: string;
+  centerAddress: string;
+  centerContactPhone: string | null;
+  matchedAt: string;
+};
+
+export type LostReportCandidatesResponse = {
+  data: LostReportCandidate[];
+  lastMatchedAt: string;
+  candidatesStale: boolean;
+};
+
+export type ConfirmLostReportRecoveryRequest = {
+  candidateId: string;
+};
+
+export type ConfirmLostReportRecoveryResponse = {
+  lostReport: LostReportResponse;
+  foundItem: FoundItemResponse;
 };
 
