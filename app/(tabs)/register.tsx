@@ -1,6 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SymbolView } from 'expo-symbols';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -15,6 +15,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { RegisterCompletionView } from '@/components/register-completion-view';
 import {
@@ -162,7 +163,17 @@ function distanceInMeters(from: GeoPoint, to: GeoPoint): number {
 
 export default function RegisterScreen() {
   const colors = useAppColors();
+  const insets = useSafeAreaInsets();
   const isMounted = useRef(true);
+  const { handoverCenterId, handoverFoundAt, handoverItemId } = useLocalSearchParams<{
+    handoverCenterId?: string;
+    handoverFoundAt?: string;
+    handoverItemId?: string;
+  }>();
+  const shouldResumeHandover =
+    typeof handoverCenterId === 'string' &&
+    typeof handoverFoundAt === 'string' &&
+    typeof handoverItemId === 'string';
 
   const [step, setStep] = useState(1);
   const [images, setImages] = useState<PickedImage[]>([]);
@@ -194,6 +205,9 @@ export default function RegisterScreen() {
   const [confirmedColor, setConfirmedColor] = useState<string | null>(null);
   const [isHandoverOpen, setIsHandoverOpen] = useState(false);
   const [isHandoverCompleted, setIsHandoverCompleted] = useState(false);
+  const [resumedHandoverItemId, setResumedHandoverItemId] = useState<string | null>(null);
+  const [isLoadingPendingHandover, setIsLoadingPendingHandover] =
+    useState(shouldResumeHandover);
 
   const [isCategoryOpen, setIsCategoryOpen] = useState(false);
   const [dateTarget, setDateTarget] = useState<'foundAt' | 'handedAt' | null>(null);
@@ -204,6 +218,38 @@ export default function RegisterScreen() {
       isMounted.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!shouldResumeHandover) return;
+
+    let cancelled = false;
+    apiRequest<LostCenter>(`/lost-centers/${handoverCenterId}`)
+      .then((center) => {
+        if (cancelled) return;
+        const parsedFoundAt = new Date(handoverFoundAt);
+        if (!Number.isFinite(parsedFoundAt.getTime())) {
+          router.replace('/home');
+          return;
+        }
+
+        setResumedHandoverItemId(handoverItemId);
+        setCenters([center]);
+        setCenterId(center.id);
+        setFoundAt(parsedFoundAt);
+        setStorageMethod('HANDED_TO_CENTER');
+        setIsHandoverOpen(true);
+      })
+      .catch(() => {
+        if (!cancelled) router.replace('/home');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingPendingHandover(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [handoverCenterId, handoverFoundAt, handoverItemId, shouldResumeHandover]);
 
   useEffect(() => {
     if (!draft) {
@@ -571,9 +617,6 @@ export default function RegisterScreen() {
       } else if (description.trim().length > DESCRIPTION_MAX_LENGTH) {
         errors.description = `특징은 ${DESCRIPTION_MAX_LENGTH}자까지 쓸 수 있어요.`;
       }
-      if (!confirmedColor) {
-        errors.description = FIELD_ERROR_MESSAGES.description;
-      }
     }
 
     if (target === 2) {
@@ -698,7 +741,8 @@ export default function RegisterScreen() {
     setBanner(null);
 
     try {
-      if (!confirmedColor) {
+      const featureColor = confirmedColor ?? draft.visionSuggestion?.color;
+      if (!featureColor) {
         setStep(3);
         setFieldErrors({ description: FIELD_ERROR_MESSAGES.description });
         setBanner({
@@ -713,7 +757,7 @@ export default function RegisterScreen() {
         foundAt: toUtcIso(foundAt),
         foundLocation: foundCoords,
         confirmedFeatures: {
-          color: confirmedColor,
+          color: featureColor,
           publicDescription: `${name.trim()}: ${description.trim()}`,
         },
         storageMethod,
@@ -819,6 +863,7 @@ export default function RegisterScreen() {
     setConfirmedColor(null);
     setIsHandoverOpen(false);
     setIsHandoverCompleted(false);
+    setResumedHandoverItemId(null);
     setStep(1);
     setImages([]);
     setName('');
@@ -842,7 +887,8 @@ export default function RegisterScreen() {
   }
 
   async function handleCompleteHandover() {
-    if (!created || !centerId || !handedAt || !foundAt) {
+    const targetItemId = created?.id ?? resumedHandoverItemId;
+    if (!targetItemId || !centerId || !handedAt || !foundAt) {
       setFieldErrors((current) => ({
         ...current,
         handedAt: !handedAt ? FIELD_ERROR_MESSAGES.handedAt : current.handedAt,
@@ -864,8 +910,9 @@ export default function RegisterScreen() {
     setIsSubmitting(true);
     setBanner(null);
     try {
-      await confirmFoundItemHandover(created.id);
+      await confirmFoundItemHandover(targetItemId);
       if (!isMounted.current) return;
+      setResumedHandoverItemId(null);
       setIsHandoverCompleted(true);
     } catch (error) {
       if (!isMounted.current) return;
@@ -907,6 +954,14 @@ export default function RegisterScreen() {
     />
   );
 
+  if (isLoadingPendingHandover) {
+    return (
+      <View style={[styles.loadingScreen, { backgroundColor: colors.page }]}>
+        <ActivityIndicator color={colors.action} />
+      </View>
+    );
+  }
+
   if (isHandoverOpen && selectedCenter && foundAt) {
     return (
       <>
@@ -918,7 +973,11 @@ export default function RegisterScreen() {
           isCompleted={isHandoverCompleted}
           onBack={() => {
             setBanner(null);
-            setIsHandoverOpen(false);
+            if (resumedHandoverItemId && !created) {
+              router.replace('/home');
+            } else {
+              setIsHandoverOpen(false);
+            }
           }}
           onChangeHandedAt={() => setDateTarget('handedAt')}
           onComplete={() => void handleCompleteHandover()}
@@ -1047,7 +1106,15 @@ export default function RegisterScreen() {
           </View>
         </ScrollView>
 
-        <View style={[styles.bottomBar, { backgroundColor: colors.page, borderTopColor: colors.line }]}>
+        <View
+          style={[
+            styles.bottomBar,
+            {
+              backgroundColor: colors.page,
+              borderTopColor: colors.line,
+              paddingBottom: Math.max(insets.bottom, 24),
+            },
+          ]}>
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ busy: isSubmitting, disabled: isSubmitting }}
@@ -1121,6 +1188,11 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
+  },
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   flex: {
     flex: 1,

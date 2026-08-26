@@ -3,6 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SymbolView } from 'expo-symbols';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   ActionTag,
@@ -44,6 +45,7 @@ export function RegisterHandoverView({
   timeError,
 }: RegisterHandoverViewProps) {
   const colors = useAppColors();
+  const insets = useSafeAreaInsets();
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -204,7 +206,15 @@ export function RegisterHandoverView({
         </View>
       </ScrollView>
 
-      <View style={[styles.bottomBar, { backgroundColor: colors.page, borderTopColor: colors.line }]}>
+      <View
+        style={[
+          styles.bottomBar,
+          {
+            backgroundColor: colors.page,
+            borderTopColor: colors.line,
+            paddingBottom: Math.max(insets.bottom, 24),
+          },
+        ]}>
         <Pressable
           accessibilityRole="button"
           onPress={onGoHome}

@@ -1,4 +1,5 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { SymbolView } from 'expo-symbols';
 
@@ -26,12 +27,15 @@ export function RegisterCompletionView({
   showHandoverAction,
 }: RegisterCompletionViewProps) {
   const colors = useAppColors();
+  const insets = useSafeAreaInsets();
   const storageLabel = showHandoverAction
     ? `${centerName ?? '분실물 센터'}에 인계 예정`
     : item.storageMethod === 'HANDED_TO_CENTER'
       ? `${centerName ?? '분실물 센터'}에 인계 완료`
       : item.storageMethod === 'MOVED_TO_SAFE_PLACE'
-        ? '주변 안전한 곳으로 옮김'
+        ? item.storageDesc
+          ? `주변 안전한 곳으로 옮김 · ${item.storageDesc}`
+          : '주변 안전한 곳으로 옮김'
         : '원래 자리에 그대로';
 
   return (
@@ -83,7 +87,15 @@ export function RegisterCompletionView({
         </View>
       </ScrollView>
 
-      <View style={[styles.bottomBar, { backgroundColor: colors.page, borderTopColor: colors.line }]}>
+      <View
+        style={[
+          styles.bottomBar,
+          {
+            backgroundColor: colors.page,
+            borderTopColor: colors.line,
+            paddingBottom: Math.max(insets.bottom, 24),
+          },
+        ]}>
         <Pressable
           accessibilityRole="button"
           onPress={onGoHome}
