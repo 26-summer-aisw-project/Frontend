@@ -29,6 +29,19 @@ import {
 
 type MockApiRequestOptions = Pick<RequestInit, 'body' | 'headers' | 'method'>;
 
+type MockRuntimeState = {
+  users: Map<string, UserResponse>;
+  foundItems: Map<string, FoundItemResponse>;
+  foundDrafts: Map<string, FoundItemDraftResponse & { pollCount: number }>;
+  lostReports: Map<string, LostReportResponse>;
+  features: Map<string, ItemFeatureResponse[]>;
+  uploadRequests: Map<string, RequestImageUploadRequest & { itemId: string }>;
+  nextFoundItemId: number;
+  nextImageId: number;
+  nextFeatureId: number;
+  nextLostReportId: number;
+};
+
 const MOCK_TOKEN = 'mock-token-xxx';
 const MOCK_REQUEST_ID = 'mock-request-id';
 const MOCK_USER_ID = '1';
@@ -37,23 +50,29 @@ const MOCK_ME_DISPLAY_NAME = '테스트 사용자';
 const MOCK_CREATED_AT = '2026-08-18T09:30:00Z';
 const LOST_REPORT_RETENTION_DAYS = 7;
 
-const mockUsers = new Map<string, UserResponse>();
-
-const mockFoundItems = new Map<string, FoundItemResponse>();
-const mockFoundDrafts = new Map<
-  string,
-  FoundItemDraftResponse & { pollCount: number }
->();
-const mockLostReports = new Map<string, LostReportResponse>();
-const mockFeatures = new Map<string, ItemFeatureResponse[]>();
-const mockUploadRequests = new Map<
-  string,
-  RequestImageUploadRequest & { itemId: string }
->();
-let nextFoundItemId = 300;
-let nextImageId = 500;
-let nextFeatureId = 700;
-let nextLostReportId = 900;
+const mockGlobal = globalThis as typeof globalThis & {
+  __lostoryMockApiState?: MockRuntimeState;
+};
+const mockState =
+  mockGlobal.__lostoryMockApiState ??
+  (mockGlobal.__lostoryMockApiState = {
+    users: new Map<string, UserResponse>(),
+    foundItems: new Map<string, FoundItemResponse>(),
+    foundDrafts: new Map<string, FoundItemDraftResponse & { pollCount: number }>(),
+    lostReports: new Map<string, LostReportResponse>(),
+    features: new Map<string, ItemFeatureResponse[]>(),
+    uploadRequests: new Map<string, RequestImageUploadRequest & { itemId: string }>(),
+    nextFoundItemId: 300,
+    nextImageId: 500,
+    nextFeatureId: 700,
+    nextLostReportId: 900,
+  });
+const mockUsers = mockState.users;
+const mockFoundItems = mockState.foundItems;
+const mockFoundDrafts = mockState.foundDrafts;
+const mockLostReports = mockState.lostReports;
+const mockFeatures = mockState.features;
+const mockUploadRequests = mockState.uploadRequests;
 
 const MOCK_LOST_CENTERS: LostCenter[] = [
   {
@@ -353,11 +372,11 @@ export async function mockApiRequest(
       return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', details);
     }
 
-    nextLostReportId += 1;
+    mockState.nextLostReportId += 1;
     const timestamp = nowIso();
     const report: LostReportResponse = {
       ...request,
-      id: String(nextLostReportId),
+      id: String(mockState.nextLostReportId),
       reporterId: MOCK_USER_ID,
       status: 'OPEN',
       expiredAt: isoAfterDays(new Date(timestamp), LOST_REPORT_RETENTION_DAYS),
@@ -424,9 +443,9 @@ export async function mockApiRequest(
       return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', details);
     }
 
-    nextFoundItemId += 1;
+    mockState.nextFoundItemId += 1;
     const draft: FoundItemDraftResponse & { pollCount: number } = {
-      id: String(nextFoundItemId),
+      id: String(mockState.nextFoundItemId),
       status: 'DRAFT',
       uploadedImageCount: images.length,
       expectedImageCount: totalImageCount,
@@ -442,14 +461,26 @@ export async function mockApiRequest(
   }
 
   if (method === 'GET' && normalizedPath === '/found-items') {
-    const items = [...mockFoundItems.values()].reverse();
+    const query = new URLSearchParams(normalizePath(path).split('?')[1] ?? '');
+    const requestedPage = Number(query.get('page') ?? '1');
+    const requestedPageSize = Number(query.get('pageSize') ?? '20');
+    const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    const pageSize =
+      Number.isInteger(requestedPageSize) && requestedPageSize >= 1 && requestedPageSize <= 100
+        ? requestedPageSize
+        : 20;
+    const status = query.get('status');
+    const items = [...mockFoundItems.values()]
+      .filter((item) => !status || item.status === status)
+      .reverse();
+    const start = (page - 1) * pageSize;
     return jsonResponse(200, {
-      data: items,
+      data: items.slice(start, start + pageSize),
       meta: {
-        page: 1,
-        pageSize: 20,
+        page,
+        pageSize,
         totalItems: items.length,
-        totalPages: Math.max(1, Math.ceil(items.length / 20)),
+        totalPages: Math.max(1, Math.ceil(items.length / pageSize)),
       },
     });
   }
@@ -551,16 +582,16 @@ export async function mockApiRequest(
       ]);
     }
 
-    nextImageId += 1;
+    mockState.nextImageId += 1;
     const image: FoundItemImageResponse = {
-      id: String(nextImageId),
+      id: String(mockState.nextImageId),
       itemId,
       contentType: upload.contentType,
       byteSize: upload.byteSize,
       sha256: upload.sha256,
       sortOrder: upload.sortOrder ?? 0,
       thumbnailStatus: 'PENDING',
-      originalUrl: `https://mock.lostory.local/original/${nextImageId}`,
+      originalUrl: `https://mock.lostory.local/original/${mockState.nextImageId}`,
       urlExpiresAt: new Date(Date.now() + 10 * 60 * 1000)
         .toISOString()
         .replace(/\.\d{3}Z$/, 'Z'),
@@ -602,10 +633,10 @@ export async function mockApiRequest(
       return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', details);
     }
 
-    nextFeatureId += 1;
+    mockState.nextFeatureId += 1;
     const timestamp = nowIso();
     const feature: ItemFeatureResponse = {
-      id: String(nextFeatureId),
+      id: String(mockState.nextFeatureId),
       itemId,
       kind: normalizeString(request.kind),
       value: normalizeString(request.value),
@@ -756,9 +787,9 @@ export async function mockApiRequest(
         ['PUBLIC_DESCRIPTION', request.confirmedFeatures.publicDescription],
       ] as const;
       const features = featureValues.map(([kind, value], ordinal): ItemFeatureResponse => {
-        nextFeatureId += 1;
+        mockState.nextFeatureId += 1;
         return {
-          id: String(nextFeatureId),
+          id: String(mockState.nextFeatureId),
           itemId: item.id,
           kind,
           value,
@@ -896,10 +927,10 @@ export async function mockApiRequest(
       const confirmedFeatures = confirmedValues.map(([kind, value], ordinal) => {
         const existing = currentFeatures.find((feature) => feature.kind === kind);
         if (!existing) {
-          nextFeatureId += 1;
+          mockState.nextFeatureId += 1;
         }
         return {
-          id: existing?.id ?? String(nextFeatureId),
+          id: existing?.id ?? String(mockState.nextFeatureId),
           itemId: item.id,
           kind,
           value,

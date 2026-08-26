@@ -1,40 +1,15 @@
-import { Redirect, Tabs } from 'expo-router';
-import { SymbolView, type SymbolViewProps } from 'expo-symbols';
+import { Redirect, Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
 import { getAccessToken } from '@/src/lib/auth-token';
 import { useAppColors } from '@/src/theme/colors';
 
-const ACTIVE = '#1C5B54';
-const INACTIVE = '#899490';
-
-type TabDef = {
-  name: string;
-  title: string;
-  symbol: SymbolViewProps['name'];
+export const unstable_settings = {
+  initialRouteName: 'home',
 };
 
-const TABS: TabDef[] = [
-  { name: 'home', title: '홈', symbol: { ios: 'house', android: 'home', web: 'home' } },
-  {
-    name: 'register',
-    title: '습득물 등록',
-    symbol: { ios: 'camera', android: 'photo_camera', web: 'photo_camera' },
-  },
-  {
-    name: 'report',
-    title: '분실물 찾기',
-    symbol: { ios: 'magnifyingglass', android: 'search', web: 'search' },
-  },
-  {
-    name: 'mypage',
-    title: '마이페이지',
-    symbol: { ios: 'person.crop.circle', android: 'account_circle', web: 'account_circle' },
-  },
-];
-
-export default function TabsLayout() {
+export default function AuthenticatedLayout() {
   const colors = useAppColors();
   const [hasToken, setHasToken] = useState<boolean | null>(null);
 
@@ -45,7 +20,6 @@ export default function TabsLayout() {
         if (!cancelled) setHasToken(token !== null);
       })
       .catch(() => {
-        // 저장소를 읽지 못하면 인증되지 않은 것으로 본다.
         if (!cancelled) setHasToken(false);
       });
     return () => {
@@ -66,23 +40,12 @@ export default function TabsLayout() {
   }
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: ACTIVE,
-        tabBarInactiveTintColor: INACTIVE,
-      }}>
-      {TABS.map(({ name, title, symbol }) => (
-        <Tabs.Screen
-          key={name}
-          name={name}
-          options={{
-            title,
-            tabBarIcon: ({ color }) => <SymbolView name={symbol} tintColor={color} size={26} />,
-          }}
-        />
-      ))}
-    </Tabs>
+    <Stack initialRouteName="home" screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="home" />
+      <Stack.Screen name="register" />
+      <Stack.Screen name="report" />
+      <Stack.Screen name="mypage" />
+    </Stack>
   );
 }
 
