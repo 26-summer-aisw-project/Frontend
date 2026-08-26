@@ -4,7 +4,10 @@ import {
   LOST_REPORT_RADIUS_METERS,
   MAX_WAYPOINT_COUNT,
   MIN_WAYPOINT_COUNT,
+  type ConfirmLostReportRecoveryResponse,
   type CreateLostReportRequest,
+  type LostReportCandidate,
+  type LostReportCandidatesResponse,
   type LostReportResponse,
 } from '@/src/types/lost-report';
 import {
@@ -34,6 +37,8 @@ type MockRuntimeState = {
   foundItems: Map<string, FoundItemResponse>;
   foundDrafts: Map<string, FoundItemDraftResponse & { pollCount: number }>;
   lostReports: Map<string, LostReportResponse>;
+  lostCandidates: Map<string, LostReportCandidatesResponse>;
+  recoveredReports: Map<string, ConfirmLostReportRecoveryResponse>;
   features: Map<string, ItemFeatureResponse[]>;
   uploadRequests: Map<string, RequestImageUploadRequest & { itemId: string }>;
   nextFoundItemId: number;
@@ -51,26 +56,37 @@ const MOCK_CREATED_AT = '2026-08-18T09:30:00Z';
 const LOST_REPORT_RETENTION_DAYS = 7;
 
 const mockGlobal = globalThis as typeof globalThis & {
-  __lostoryMockApiState?: MockRuntimeState;
+  __lostoryMockApiState?: Partial<MockRuntimeState>;
 };
-const mockState =
-  mockGlobal.__lostoryMockApiState ??
-  (mockGlobal.__lostoryMockApiState = {
-    users: new Map<string, UserResponse>(),
-    foundItems: new Map<string, FoundItemResponse>(),
-    foundDrafts: new Map<string, FoundItemDraftResponse & { pollCount: number }>(),
-    lostReports: new Map<string, LostReportResponse>(),
-    features: new Map<string, ItemFeatureResponse[]>(),
-    uploadRequests: new Map<string, RequestImageUploadRequest & { itemId: string }>(),
-    nextFoundItemId: 300,
-    nextImageId: 500,
-    nextFeatureId: 700,
-    nextLostReportId: 900,
-  });
+const previousMockState = mockGlobal.__lostoryMockApiState;
+const mockState: MockRuntimeState = {
+  users: previousMockState?.users ?? new Map<string, UserResponse>(),
+  foundItems: previousMockState?.foundItems ?? new Map<string, FoundItemResponse>(),
+  foundDrafts:
+    previousMockState?.foundDrafts ??
+    new Map<string, FoundItemDraftResponse & { pollCount: number }>(),
+  lostReports: previousMockState?.lostReports ?? new Map<string, LostReportResponse>(),
+  lostCandidates:
+    previousMockState?.lostCandidates ?? new Map<string, LostReportCandidatesResponse>(),
+  recoveredReports:
+    previousMockState?.recoveredReports ??
+    new Map<string, ConfirmLostReportRecoveryResponse>(),
+  features: previousMockState?.features ?? new Map<string, ItemFeatureResponse[]>(),
+  uploadRequests:
+    previousMockState?.uploadRequests ??
+    new Map<string, RequestImageUploadRequest & { itemId: string }>(),
+  nextFoundItemId: previousMockState?.nextFoundItemId ?? 300,
+  nextImageId: previousMockState?.nextImageId ?? 500,
+  nextFeatureId: previousMockState?.nextFeatureId ?? 700,
+  nextLostReportId: previousMockState?.nextLostReportId ?? 900,
+};
+mockGlobal.__lostoryMockApiState = mockState;
 const mockUsers = mockState.users;
 const mockFoundItems = mockState.foundItems;
 const mockFoundDrafts = mockState.foundDrafts;
 const mockLostReports = mockState.lostReports;
+const mockLostCandidates = mockState.lostCandidates;
+const mockRecoveredReports = mockState.recoveredReports;
 const mockFeatures = mockState.features;
 const mockUploadRequests = mockState.uploadRequests;
 
@@ -247,6 +263,76 @@ function nowIso(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+const MOCK_LOST_ITEM_NAMES: Record<string, string> = {
+  WALLET: '카드 지갑',
+  ELECTRONICS: '스마트폰',
+  BAG: '파우치',
+  ID_CARD: '학생증',
+  KEY: '열쇠고리',
+  CLOTHING: '운동화',
+  BOOK: '노트',
+  ACCESSORY: '손목시계',
+};
+
+function createMockLostCandidates(report: LostReportResponse): LostReportCandidatesResponse {
+  const matchedAt = report.lastMatchedAt ?? report.createdAt;
+  if (report.category === 'ETC') {
+    return { data: [], lastMatchedAt: matchedAt, candidatesStale: false };
+  }
+
+  const itemName = MOCK_LOST_ITEM_NAMES[report.category] ?? '분실물';
+  const descriptions = [
+    itemName,
+    `검정색 ${itemName}`,
+    `네이비 ${itemName}`,
+    `진회색 ${itemName}`,
+    `${itemName} 케이스`,
+  ];
+  const scores = [92, 78, 65, 51, 43];
+  const colors = ['BLACK', 'BLACK', 'NAVY', 'GRAY', 'BLACK'];
+  const foundDate = report.lostAtTo.slice(0, 10);
+  const data: LostReportCandidate[] = descriptions.map((publicDescription, index) => ({
+    candidateId: `${report.id}${index + 1}`,
+    rank: index + 1,
+    score: scores[index],
+    category: report.category,
+    publicDescription,
+    color: colors[index],
+    foundDate,
+    thumbnailUrl: null,
+    centerName: '숭실대학교 학생회관 4층 분실물 센터',
+    centerAddress: '서울특별시 동작구 상도로 369',
+    centerContactPhone: '02-000-0000',
+    matchedAt,
+  }));
+
+  return { data, lastMatchedAt: matchedAt, candidatesStale: false };
+}
+
+function createMockRecoveredFoundItem(
+  report: LostReportResponse,
+  candidate: LostReportCandidate,
+  timestamp: string,
+): FoundItemResponse {
+  return {
+    id: `${candidate.candidateId}0`,
+    finderId: '2',
+    category: candidate.category,
+    foundAt: candidate.matchedAt,
+    location: report.waypoints[0].point,
+    storageMethod: 'HANDED_TO_CENTER',
+    storageDesc: null,
+    centerId: '1',
+    handedAt: candidate.matchedAt,
+    expectedImageCount: 1,
+    status: 'RETURNED',
+    expiredAt: isoAfterDays(new Date(candidate.matchedAt), DEFAULT_RETENTION_DAYS),
+    returnSource: 'REPORTER_CONFIRMED',
+    createdAt: candidate.matchedAt,
+    updatedAt: timestamp,
+  };
+}
+
 export async function mockApiRequest(
   path: string,
   options: MockApiRequestOptions = {},
@@ -388,7 +474,94 @@ export async function mockApiRequest(
       updatedAt: timestamp,
     };
     mockLostReports.set(report.id, report);
+    mockLostCandidates.set(report.id, createMockLostCandidates(report));
     return jsonResponse(201, report);
+  }
+
+  const candidateListMatch =
+    method === 'GET' ? matchPath('/lost-reports/*/candidates', normalizedPath) : null;
+  if (candidateListMatch) {
+    const reportId = candidateListMatch[0];
+    if (!mockLostReports.has(reportId)) {
+      return errorResponse(404, 'NOT_FOUND', '요청한 정보를 찾을 수 없습니다.');
+    }
+
+    const candidates = mockLostCandidates.get(reportId);
+    if (!candidates) {
+      return errorResponse(404, 'NOT_FOUND', '요청한 정보를 찾을 수 없습니다.');
+    }
+    return jsonResponse(200, candidates);
+  }
+
+  const refreshCandidatesMatch =
+    method === 'POST'
+      ? matchPath('/lost-reports/*/candidates:refresh', normalizedPath)
+      : null;
+  if (refreshCandidatesMatch) {
+    const reportId = refreshCandidatesMatch[0];
+    const report = mockLostReports.get(reportId);
+    if (!report) {
+      return errorResponse(404, 'NOT_FOUND', '요청한 정보를 찾을 수 없습니다.');
+    }
+
+    const timestamp = nowIso();
+    const updatedReport: LostReportResponse = {
+      ...report,
+      lastMatchedAt: timestamp,
+      candidatesStale: false,
+      updatedAt: timestamp,
+    };
+    const candidates = createMockLostCandidates(updatedReport);
+    mockLostReports.set(reportId, updatedReport);
+    mockLostCandidates.set(reportId, candidates);
+    return jsonResponse(200, candidates);
+  }
+
+  const confirmRecoveredMatch =
+    method === 'POST'
+      ? normalizedPath.match(/^\/lost-reports\/([^/]+):confirm-recovered$/)
+      : null;
+  if (confirmRecoveredMatch) {
+    const reportId = confirmRecoveredMatch[1];
+    const request = parseJsonBody<{ candidateId?: string }>(options.body);
+    const report = mockLostReports.get(reportId);
+    const candidates = mockLostCandidates.get(reportId);
+    if (!report || !candidates) {
+      return errorResponse(404, 'NOT_FOUND', '요청한 정보를 찾을 수 없습니다.');
+    }
+
+    const recovered = mockRecoveredReports.get(reportId);
+    if (recovered) {
+      if (recovered.lostReport.resolvedCandidateId === request?.candidateId) {
+        return jsonResponse(200, recovered);
+      }
+      return errorResponse(409, 'IDEMPOTENCY_CONFLICT', '이미 처리된 요청입니다.');
+    }
+
+    const candidate = candidates.data.find(
+      (value) => value.candidateId === request?.candidateId,
+    );
+    if (!candidate) {
+      return errorResponse(422, 'VALIDATION_ERROR', '입력값을 확인해 주세요.', [
+        { field: 'candidateId', reason: 'Must belong to the current candidate set.' },
+      ]);
+    }
+
+    const timestamp = nowIso();
+    const lostReport: LostReportResponse = {
+      ...report,
+      status: 'CLOSED',
+      resolvedCandidateId: candidate.candidateId,
+      resolvedAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const response: ConfirmLostReportRecoveryResponse = {
+      lostReport,
+      foundItem: createMockRecoveredFoundItem(report, candidate, timestamp),
+    };
+    mockLostReports.set(reportId, lostReport);
+    mockRecoveredReports.set(reportId, response);
+    return jsonResponse(200, response);
   }
 
   if (method === 'GET' && normalizedPath === '/lost-centers') {

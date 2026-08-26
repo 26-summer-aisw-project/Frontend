@@ -39,6 +39,7 @@ export class ApiError extends Error {
   readonly status: number | null;
   readonly details: ErrorDetail[];
   readonly requestId: string | null;
+  readonly retryAfterSeconds: number | null;
 
   constructor(options: {
     code: ClientErrorCode;
@@ -46,6 +47,7 @@ export class ApiError extends Error {
     status?: number;
     details?: ErrorDetail[];
     requestId?: string;
+    retryAfterSeconds?: number;
   }) {
     super(options.userMessage);
     this.name = 'ApiError';
@@ -53,6 +55,7 @@ export class ApiError extends Error {
     this.status = options.status ?? null;
     this.details = options.details ?? [];
     this.requestId = options.requestId ?? null;
+    this.retryAfterSeconds = options.retryAfterSeconds ?? null;
   }
 }
 
@@ -81,6 +84,24 @@ async function parseJson(response: Response): Promise<unknown> {
   } catch {
     return undefined;
   }
+}
+
+function parseRetryAfterSeconds(response: Response): number | undefined {
+  const value = response.headers.get('Retry-After')?.trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.ceil(seconds);
+  }
+
+  const retryAt = Date.parse(value);
+  if (Number.isNaN(retryAt)) {
+    return undefined;
+  }
+  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
 }
 
 async function redirectAfterUnauthenticated(): Promise<void> {
@@ -140,6 +161,7 @@ export async function apiRequest<T>(
   }
 
   const payload = await parseJson(response);
+  const retryAfterSeconds = parseRetryAfterSeconds(response);
   if (response.ok) {
     return payload as T;
   }
@@ -149,6 +171,7 @@ export async function apiRequest<T>(
       code: 'UNKNOWN_ERROR',
       userMessage: UNKNOWN_ERROR_MESSAGE,
       status: response.status,
+      retryAfterSeconds,
     });
   }
 
@@ -163,5 +186,6 @@ export async function apiRequest<T>(
     status: response.status,
     details: toErrorDetails(details),
     requestId: typeof requestId === 'string' ? requestId : undefined,
+    retryAfterSeconds,
   });
 }

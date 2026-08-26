@@ -5,17 +5,27 @@ import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
 import { View } from 'react-native';
 
+import { LostReportCandidateDetailView } from '@/components/lost-report-candidate-detail-view';
+import { LostReportCandidatesView } from '@/components/lost-report-candidates-view';
 import { LostReportDetailsStep } from '@/components/lost-report-details-step';
 import { LostReportLocationStep } from '@/components/lost-report-location-step';
-import { ScreenPlaceholder } from '@/components/screen-placeholder';
 import { MOCK_API } from '@/src/config/env';
 import { ApiError } from '@/src/lib/api';
-import { createLostReport, searchPlaces, toLostAtRange } from '@/src/lib/lost-report';
+import {
+  confirmLostReportRecovery,
+  createLostReport,
+  getLostReportCandidates,
+  refreshLostReportCandidates,
+  searchPlaces,
+  toLostAtRange,
+} from '@/src/lib/lost-report';
 import type { GeoPoint } from '@/src/types/found-item';
 import {
   LOST_REPORT_RADIUS_METERS,
   MAX_WAYPOINT_COUNT,
   type CreateLostReportRequest,
+  type LostReportCandidate,
+  type LostReportCandidatesResponse,
   type LostTimeBand,
 } from '@/src/types/lost-report';
 
@@ -41,6 +51,17 @@ function validationErrorMessage(error: ApiError): string {
   return error.message;
 }
 
+function apiErrorMessage(error: ApiError): string {
+  if (error.code !== 'RATE_LIMITED' || error.retryAfterSeconds === null) {
+    return error.message;
+  }
+
+  if (error.retryAfterSeconds >= 60) {
+    return `${Math.ceil(error.retryAfterSeconds / 60)}분 후 다시 시도해 주세요.`;
+  }
+  return `${Math.max(1, error.retryAfterSeconds)}초 후 다시 시도해 주세요.`;
+}
+
 export default function ReportScreen() {
   const [step, setStep] = useState<1 | 2>(1);
   const [cameraCenter, setCameraCenter] = useState(INITIAL_CENTER);
@@ -56,11 +77,41 @@ export default function ReportScreen() {
   const [isSearching, setIsSearching] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mockReportId, setMockReportId] = useState<string | null>(null);
+  const [reportId, setReportId] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<LostReportCandidatesResponse | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<LostReportCandidate | null>(null);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
+  const [candidateListError, setCandidateListError] = useState<string | null>(null);
 
   function clearError() {
     setError(null);
+  }
+
+  function resetReportFlow() {
+    setStep(1);
+    setCameraCenter(INITIAL_CENTER);
+    setPins([]);
+    setSearchQuery('');
+    setDate(null);
+    setTimeBand(null);
+    setItemName('');
+    setCategory(null);
+    setBrand('');
+    setDescription('');
+    setImageUris([]);
+    setError(null);
+    setReportId(null);
+    setCandidates(null);
+    setSelectedCandidate(null);
+    setCandidateError(null);
+    setCandidateListError(null);
+  }
+
+  function handleGoHome() {
+    resetReportFlow();
+    router.replace('/home');
   }
 
   function handleTapMap(point: GeoPoint) {
@@ -171,11 +222,23 @@ export default function ReportScreen() {
 
     try {
       const createdReport = await createLostReport(request);
-      if (MOCK_API) {
-        setMockReportId(createdReport.id);
-        return;
+      const currentCandidates = await getLostReportCandidates(createdReport.id);
+      let candidateResponse = currentCandidates;
+      setCandidateListError(null);
+      if (currentCandidates.candidatesStale) {
+        try {
+          candidateResponse = await refreshLostReportCandidates(createdReport.id);
+        } catch (caught) {
+          if (caught instanceof ApiError && caught.code === 'UNAUTHENTICATED') {
+            throw caught;
+          }
+          if (caught instanceof ApiError && caught.code === 'RATE_LIMITED') {
+            setCandidateListError(apiErrorMessage(caught));
+          }
+        }
       }
-      router.replace('/home');
+      setReportId(createdReport.id);
+      setCandidates(candidateResponse);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === 'UNAUTHENTICATED') {
         return;
@@ -184,7 +247,7 @@ export default function ReportScreen() {
         caught instanceof ApiError && caught.code === 'VALIDATION_ERROR'
           ? validationErrorMessage(caught)
           : caught instanceof ApiError
-            ? caught.message
+            ? apiErrorMessage(caught)
             : '분실물 검색을 시작하지 못했어요.',
       );
     } finally {
@@ -192,14 +255,63 @@ export default function ReportScreen() {
     }
   }
 
-  if (mockReportId) {
+  async function handleConfirmRecovery() {
+    if (!reportId || !selectedCandidate || isConfirming) {
+      return;
+    }
+
+    setCandidateError(null);
+    setIsConfirming(true);
+    try {
+      await confirmLostReportRecovery(reportId, {
+        candidateId: selectedCandidate.candidateId,
+      });
+      handleGoHome();
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === 'UNAUTHENTICATED') {
+        return;
+      }
+      setCandidateError(
+        caught instanceof ApiError
+          ? apiErrorMessage(caught)
+          : '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+      );
+    } finally {
+      setIsConfirming(false);
+    }
+  }
+
+  if (candidates && selectedCandidate) {
     return (
       <View style={{ flex: 1 }}>
-        <StatusBar style="dark" />
-        <ScreenPlaceholder
-          badge="접수 완료"
-          name="분실 신고"
-          note={`신고 번호 ${mockReportId}`}
+        <StatusBar style="light" />
+        <LostReportCandidateDetailView
+          candidate={selectedCandidate}
+          error={candidateError}
+          isConfirming={isConfirming}
+          onBack={() => {
+            setCandidateError(null);
+            setSelectedCandidate(null);
+          }}
+          onConfirm={() => void handleConfirmRecovery()}
+        />
+      </View>
+    );
+  }
+
+  if (candidates) {
+    return (
+      <View style={{ flex: 1 }}>
+        <StatusBar style="light" />
+        <LostReportCandidatesView
+          candidates={candidates}
+          error={candidateListError}
+          onBack={handleGoHome}
+          onGoHome={handleGoHome}
+          onSelectCandidate={(candidate) => {
+            setCandidateError(null);
+            setSelectedCandidate(candidate);
+          }}
         />
       </View>
     );
@@ -235,7 +347,9 @@ export default function ReportScreen() {
           category={category}
           description={description}
           error={error}
-          featureSuggestions={imageUris.length > 0 ? MOCK_FEATURE_SUGGESTIONS : []}
+          featureSuggestions={
+            MOCK_API && imageUris.length > 0 ? MOCK_FEATURE_SUGGESTIONS : []
+          }
           imageUris={imageUris}
           isImageLimitReached={imageUris.length >= MAX_LOST_REPORT_IMAGE_COUNT}
           isSubmitting={isSubmitting}
