@@ -1,7 +1,7 @@
 import { Fragment } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import type { LostLocationMapProps } from '@/components/lost-location-map';
+import type { LostLocationMapProps } from '@/components/lost-location-map.types';
 import { useAppColors } from '@/src/theme/colors';
 
 type MapSize = { width: number; height: number };

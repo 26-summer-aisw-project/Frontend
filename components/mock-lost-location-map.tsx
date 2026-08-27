@@ -8,7 +8,7 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 
-import type { LostLocationMapProps } from '@/components/lost-location-map';
+import type { LostLocationMapProps } from '@/components/lost-location-map.types';
 import { MockLostRoute } from '@/components/mock-lost-route';
 import { appFontFamily, useAppColors } from '@/src/theme/colors';
 

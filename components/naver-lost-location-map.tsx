@@ -7,7 +7,7 @@ import {
 } from '@mj-studio/react-native-naver-map';
 import { StyleSheet } from 'react-native';
 
-import type { LostLocationMapProps } from '@/components/lost-location-map';
+import type { LostLocationMapProps } from '@/components/lost-location-map.types';
 import type { GeoPoint } from '@/src/types/found-item';
 import { LOST_REPORT_RADIUS_METERS } from '@/src/types/lost-report';
 
