@@ -1090,6 +1090,7 @@ export default function RegisterScreen() {
                 centers={displayedCenters}
                 centersError={centersError}
                 errors={fieldErrors}
+                foundCoords={foundCoords}
                 isLoadingCenters={isLoadingCenters}
                 onChangeStorageDesc={(value) => {
                   setStorageDesc(value);

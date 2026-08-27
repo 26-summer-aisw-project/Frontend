@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 
+import { RegisterLocationMap } from '@/components/register-location-map';
 import {
   ActionTag,
   AiTag,
@@ -19,7 +20,6 @@ import {
   FieldError,
   FieldLabel,
   ICONS,
-  MapPreview,
   RadioRow,
   formatDateTime,
 } from '@/components/register-ui';
@@ -441,7 +441,11 @@ export function RegisterFoundInfoStep({
 
       <Card>
         <Text style={[styles.cardTitle, { color: colors.ink }]}>습득 위치</Text>
-        <MapPreview height={230} />
+        <RegisterLocationMap
+          center={foundCoords}
+          height={230}
+          markers={foundCoords ? [{ id: 'found-location', point: foundCoords, selected: true }] : []}
+        />
       </Card>
     </>
   );
@@ -452,6 +456,7 @@ type StorageStepProps = {
   centers: readonly { center: LostCenter; distance?: number }[];
   centersError: string | null;
   errors: StepErrors;
+  foundCoords: GeoPoint | null;
   isLoadingCenters: boolean;
   onChangeStorageDesc: (value: string) => void;
   onRetryCenters: () => void;
@@ -467,6 +472,7 @@ export function RegisterStorageStep({
   centers,
   centersError,
   errors,
+  foundCoords,
   isLoadingCenters,
   onChangeStorageDesc,
   onRetryCenters,
@@ -478,12 +484,35 @@ export function RegisterStorageStep({
 }: StorageStepProps) {
   const colors = useAppColors();
   const inputShell = { backgroundColor: colors.surface, borderColor: colors.lineStrong };
+  const centerMarkers = centers.flatMap(({ center }, index) =>
+    center.location
+      ? [
+          {
+            id: center.id,
+            label: String(index + 1),
+            point: center.location,
+            selected: center.id === centerId,
+          },
+        ]
+      : [],
+  );
+  const mapCenter = selectedCenter?.location ?? foundCoords ?? centerMarkers[0]?.point ?? null;
 
   return (
     <>
       <Card>
         <Text style={[styles.cardTitle, { color: colors.ink }]}>인계할 분실물 센터</Text>
-        <MapPreview height={184} markers={Math.min(centers.length, 3)} />
+        <RegisterLocationMap
+          center={mapCenter}
+          height={184}
+          markers={centerMarkers}
+          onSelectMarker={(markerId) => {
+            const selected = centers.find(({ center }) => center.id === markerId)?.center;
+            if (selected) {
+              onSelectCenter(selected);
+            }
+          }}
+        />
 
         {isLoadingCenters ? (
           <View style={styles.centersPlaceholder}>
